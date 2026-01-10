@@ -1,9 +1,7 @@
-Data Efficiency: Storing records as JSON inside Sled (serde_json) is wasteful. Binary formats (like bincode) would reduce disk usage by ~60% and speed up reads significantly.
 
 Fragile Spidering: The spider logic doesn't use a Bloom filter. If a popular torrent is being announced 100 times a second, the spider will attempt 100 database writes/reads a second for the same hash, trashing the disk I/O.
 
 The "Scan" Bottleneck: In enrich.rs, the code storage::list_missing_info scans the database to find work. As soon as you have 50,000 torrents, the application will spend 100% of its CPU just iterating over database keys to find the next item to process.
 
-only add those torrents to database that have seeders greater than or equal to 2 we don't wan't to waste memory, also run workers who would checks on the database to remove inactive torrent link continously. so when a torrent becomes inactive it doesn't stay on our database
 
-Make UI have nice mminimial look modern use Black white orange brown color pallete
+Make UI have nice mminimial look modern use brown white light brown (rust and chocolaty apallete) color pallete, also minimal in feeling but modern. Also it should look like simple ai website it should be really good ui like a master ahs designed it.

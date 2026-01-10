@@ -1,4 +1,5 @@
 mod enrich;
+mod cleanup;
 mod index;
 mod spider;
 mod storage;
@@ -45,6 +46,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Autonomous discovery (DHT spider): harvest new hashes from DHT traffic.
     tokio::spawn(spider::run(state.clone()));
+
+    // Periodic cleanup: remove inactive / low-seed torrents so they don't accumulate.
+    tokio::spawn(cleanup::run(state.clone()));
 
     let addr = std::env::var("SERMA_ADDR")
         .ok()

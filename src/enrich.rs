@@ -216,12 +216,19 @@ async fn enrich_one(
         .clone()
         .unwrap_or_else(|| format!("Torrent {}", &updated.info_hash_hex));
     let magnet_for_index = updated.magnet.clone().unwrap_or_default();
-    let _ = state.index.upsert(
-        &updated.info_hash_hex,
-        &title_for_index,
-        &magnet_for_index,
-        updated.seeders,
-    );
+
+    // Only index torrents that meet the minimum activity threshold.
+    if updated.seeders >= 2 {
+        let _ = state.index.upsert(
+            &updated.info_hash_hex,
+            &title_for_index,
+            &magnet_for_index,
+            updated.seeders,
+        );
+    } else {
+        // If it was previously indexed, remove it.
+        let _ = state.index.delete(&updated.info_hash_hex);
+    }
     let _ = state.index.maybe_commit();
     Ok(())
 }

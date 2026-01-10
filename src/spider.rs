@@ -193,8 +193,14 @@ fn ingest_spidered_hash(state: &AppState, info_hash_hex: &str) -> anyhow::Result
         .unwrap_or_else(|| format!("Torrent {}", &record.info_hash_hex));
     let magnet = record.magnet.clone().unwrap_or_default();
 
-    state.index.upsert(&record.info_hash_hex, &title, &magnet, record.seeders)?;
-    state.index.maybe_commit().ok();
+    // Only index "active" torrents to conserve memory.
+    // The enrichment worker will update seeders and reindex once >= 2.
+    if record.seeders >= 2 {
+        state
+            .index
+            .upsert(&record.info_hash_hex, &title, &magnet, record.seeders)?;
+        state.index.maybe_commit().ok();
+    }
     Ok(())
 }
 

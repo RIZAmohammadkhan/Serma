@@ -174,6 +174,20 @@ impl SearchIndex {
         Ok(())
     }
 
+    pub fn delete(&self, info_hash_hex: &str) -> anyhow::Result<()> {
+        let writer = self
+            .inner
+            .writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("tantivy writer lock poisoned"))?;
+
+        let term = Term::from_field_text(self.inner.info_hash, info_hash_hex);
+        writer.delete_term(term);
+
+        self.inner.pending_ops.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     pub fn maybe_commit(&self) -> anyhow::Result<()> {
         let mut writer = self
             .inner
