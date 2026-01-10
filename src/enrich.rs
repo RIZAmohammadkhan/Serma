@@ -17,8 +17,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, timeout};
 
-const MISSING_SCAN_LIMIT: usize = 64;
-const MAX_CONCURRENT_ENRICH: usize = 8;
+const MISSING_SCAN_LIMIT: usize = 200;
+const MAX_CONCURRENT_ENRICH: usize = 64;
 // DHT peers are often unreachable (NAT/firewalls). We gather a larger set so
 // metadata enrichment has a reasonable chance to find at least one reachable
 // peer that supports BEP-10/ut_metadata.
