@@ -1,433 +1,399 @@
 use crate::AppState;
 use axum::{
-    Json, Router,
     extract::{Path, Query, State},
     response::{Html, IntoResponse},
     routing::get,
+    Json, Router,
 };
 use serde::Deserialize;
 
 const APP_TITLE: &str = "Serma";
-const APP_TAGLINE: &str = "Local torrent search, continuously enriched.";
+const APP_TAGLINE: &str = "The local index.";
 
-const ICON_MAGNET: &str = r#"<svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M7 3a2 2 0 0 0-2 2v7a7 7 0 0 0 14 0V5a2 2 0 0 0-2-2h-2v9a3 3 0 0 1-6 0V3H7Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 3v9a3 3 0 0 0 6 0V3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/></svg>"#;
-const ICON_COPY: &str = r#"<svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M9 9h10v11H9V9Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>"#;
-const ICON_SEARCH: &str = r#"<svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="1.7"/><path d="M21 21l-4.2-4.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>"#;
+// Icons (Stroke width adjusted for dark mode contrast)
+const ICON_MAGNET: &str = r##"<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3a2 2 0 0 0-2 2v7a7 7 0 0 0 14 0V5a2 2 0 0 0-2-2h-2v9a3 3 0 0 1-6 0V3H7Z"/><path d="M9 3v9a3 3 0 0 0 6 0V3" opacity="0.5"/></svg>"##;
+const ICON_COPY: &str = r##"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>"##;
+const ICON_SEARCH: &str = r##"<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"##;
+const ICON_ARROW_RIGHT: &str = r##"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>"##;
 
 fn page(title: &str, body: String) -> Html<String> {
     let full_title = if title.trim().is_empty() {
         APP_TITLE.to_string()
     } else {
-        format!("{} · {}", title, APP_TITLE)
+        format!("{} / {}", title, APP_TITLE)
     };
 
     Html(format!(
         r##"<!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="color-scheme" content="light" />
-        <title>{}</title>
-        <style>
-            :root {{
-                /* Coffee / chocolate / beige palette (minimal, elegant) */
-                --bg-primary: #fbf6ef;
-                --bg-secondary: #f3ece3;
-                --surface: rgba(255, 255, 255, 0.72);
-                --surface-2: rgba(255, 255, 255, 0.52);
-                --text-primary: #251a14;
-                --text-secondary: #6c5a4c;
-                --text-tertiary: rgba(37, 26, 20, 0.50);
-                --border-light: rgba(37, 26, 20, 0.10);
-                --border-medium: rgba(37, 26, 20, 0.16);
-                --accent: #8b3f2f; /* rust */
-                --accent-hover: #5a2b1f; /* cocoa */
-                --accent-light: rgba(139, 63, 47, 0.12);
-                --shadow-sm: 0 1px 2px rgba(37, 26, 20, 0.06);
-                --shadow-md: 0 10px 30px rgba(37, 26, 20, 0.10);
-                --shadow-lg: 0 26px 70px rgba(37, 26, 20, 0.14);
-                --radius-sm: 10px;
-                --radius-md: 12px;
-                --radius-lg: 16px;
-            }}
-            * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-            html {{ height: 100%; }}
-            body {{
-                min-height: 100%;
-                margin: 0;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                font-size: 15px;
-                line-height: 1.6;
-                background:
-                    radial-gradient(900px 440px at 18% -12%, rgba(139, 63, 47, 0.12), transparent 58%),
-                    radial-gradient(900px 440px at 86% -18%, rgba(90, 43, 31, 0.08), transparent 58%),
-                    linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
-                color: var(--text-primary);
-                -webkit-font-smoothing: antialiased;
-                -moz-osx-font-smoothing: grayscale;
-            }}
-            a {{ 
-                color: var(--accent); 
-                text-decoration: none; 
-                transition: color 0.2s ease;
-            }}
-            a:hover {{ color: var(--accent-hover); }}
-            .wrap {{ 
-                max-width: 1040px; 
-                margin: 0 auto; 
-                padding: 26px 16px 68px; 
-            }}
-            header {{ 
-                display: flex; 
-                align-items: center; 
-                justify-content: space-between; 
-                margin-bottom: 32px; 
-                padding-bottom: 18px;
-                border-bottom: 1px solid var(--border-light);
-            }}
-            .brand {{ 
-                display: flex; 
-                align-items: center; 
-                gap: 16px; 
-            }}
-            .mark {{
-                width: 48px; 
-                height: 48px;
-                border-radius: var(--radius-md);
-                background: linear-gradient(135deg, rgba(139, 63, 47, 0.92) 0%, rgba(90, 43, 31, 0.92) 100%);
-                display: flex; 
-                align-items: center; 
-                justify-content: center;
-                color: white;
-                box-shadow: 0 16px 46px rgba(90, 43, 31, 0.20);
-                transition: transform 0.16s ease, box-shadow 0.16s ease;
-            }}
-            .mark:hover {{
-                transform: translateY(-2px);
-                box-shadow: var(--shadow-lg);
-            }}
-            .brand h1 {{ 
-                font-size: 22px; 
-                font-weight: 600; 
-                letter-spacing: -0.5px; 
-                line-height: 1.2; 
-                color: var(--text-primary);
-            }}
-            .brand p {{ 
-                color: var(--text-secondary); 
-                font-size: 14px; 
-                font-weight: 400;
-            }}
-            nav {{ 
-                display: flex; 
-                gap: 8px; 
-                align-items: center; 
-            }}
-            .card {{
-                background: var(--surface);
-                border: 1px solid var(--border-light);
-                border-radius: var(--radius-lg);
-                padding: 22px;
-                box-shadow: var(--shadow-sm);
-                backdrop-filter: blur(10px);
-                transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
-            }}
-            ul.results .card:hover {{
-                box-shadow: var(--shadow-md);
-                transform: translateY(-1px);
-                border-color: rgba(37, 26, 20, 0.18);
-            }}
-            .hero {{ 
-                padding: 34px 28px; 
-                text-align: center;
-                max-width: 920px;
-                margin: 0 auto;
-            }}
-            .hero h2 {{ 
-                font-size: 30px; 
-                font-weight: 600; 
-                letter-spacing: -0.8px; 
-                margin-bottom: 12px;
-                color: var(--text-primary);
-            }}
-            .hero p {{ 
-                color: var(--text-secondary); 
-                font-size: 15px; 
-                margin-bottom: 22px;
-                max-width: 64ch;
-                margin-left: auto;
-                margin-right: auto;
-            }}
-            .searchbar {{ 
-                display: flex; 
-                gap: 12px; 
-                align-items: center;
-                width: 100%;
-                max-width: 700px;
-                margin: 0 auto;
-            }}
-            .searchbar input {{
-                flex: 1 1 auto;
-                min-width: 0;
-                padding: 12px 14px;
-                border-radius: var(--radius-md);
-                border: 1px solid var(--border-medium);
-                background: rgba(255, 255, 255, 0.90);
-                color: var(--text-primary);
-                font-size: 15px;
-                outline: none;
-                transition: border-color 0.16s ease, box-shadow 0.16s ease;
-                box-shadow: none;
-                height: 44px;
-            }}
-            .searchbar input:focus {{ 
-                border-color: var(--accent); 
-                box-shadow: 0 0 0 4px var(--accent-light);
-            }}
-            .searchbar input::placeholder {{
-                color: var(--text-tertiary);
-            }}
-            .searchbar > .btn,
-            .searchbar > button.btn {{
-                flex: 0 0 auto;
-            }}
-            .btn {{
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                padding: 10px 14px;
-                border-radius: var(--radius-md);
-                border: 1px solid var(--border-medium);
-                background: rgba(255, 255, 255, 0.92);
-                color: var(--text-primary);
-                font-size: 14px;
-                font-weight: 500;
-                cursor: pointer;
-                text-decoration: none;
-                white-space: nowrap;
-                transition: all 0.2s ease;
-                box-shadow: none;
-                height: 44px;
-            }}
-            .btn:hover {{ 
-                background: rgba(255, 255, 255, 0.98);
-                border-color: var(--border-medium);
-                box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
-                transform: translateY(-0.5px);
-            }}
-            .btn:active {{ 
-                transform: translateY(0); 
-                box-shadow: none;
-            }}
-            .btn.primary {{
-                background: linear-gradient(135deg, rgba(139, 63, 47, 0.96) 0%, rgba(90, 43, 31, 0.96) 100%);
-                border-color: transparent;
-                color: white;
-                box-shadow: 0 16px 34px rgba(90, 43, 31, 0.18);
-            }}
-            .btn.primary:hover {{ 
-                box-shadow: 0 22px 48px rgba(90, 43, 31, 0.22);
-                transform: translateY(-1px);
-            }}
-            .btn.inline {{ 
-                display: inline-flex; 
-                gap: 8px; 
-            }}
-            .btn.icononly {{ 
-                padding: 10px;
-                min-width: 44px;
-            }}
-            .icon {{ 
-                width: 18px; 
-                height: 18px; 
-                display: inline-block;
-                flex-shrink: 0;
-            }}
-            ul.results {{ 
-                list-style: none; 
-                padding: 0; 
-                margin: 24px 0 0; 
-                display: grid; 
-                gap: 16px; 
-            }}
-            .row {{ 
-                display: flex; 
-                justify-content: space-between; 
-                gap: 20px; 
-                align-items: flex-start;
-                flex-wrap: wrap;
-            }}
-            .title {{ 
-                font-weight: 600; 
-                font-size: 17px;
-                margin: 0 0 10px; 
-                letter-spacing: -0.3px; 
-                color: var(--text-primary);
-                line-height: 1.4;
-            }}
-            .meta {{ 
-                color: var(--text-secondary); 
-                font-size: 13px;
-                line-height: 1.5;
-            }}
-            .actions {{ 
-                display: flex; 
-                gap: 8px; 
-                align-items: center; 
-                flex-wrap: wrap;
-            }}
-            .pill {{
-                display: inline-flex;
-                gap: 6px;
-                align-items: center;
-                padding: 6px 12px;
-                border-radius: 999px;
-                border: 1px solid var(--border-light);
-                background: rgba(255, 255, 255, 0.55);
-                font-size: 13px;
-                font-weight: 500;
-                color: var(--text-secondary);
-                white-space: nowrap;
-            }}
-            code {{
-                font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-                font-size: 0.92em;
-                background: var(--bg-secondary);
-                padding: 2px 6px;
-                border-radius: 4px;
-                color: var(--text-primary);
-            }}
-            .hash {{ 
-                user-select: all; 
-                word-break: break-all;
-            }}
-            footer {{ 
-                margin-top: 64px; 
-                padding-top: 32px;
-                border-top: 1px solid var(--border-light);
-                color: var(--text-tertiary); 
-                font-size: 13px;
-                text-align: center;
-            }}
-            .empty {{ 
-                color: var(--text-secondary); 
-                margin: 32px 0; 
-                text-align: center;
-                font-size: 15px;
-            }}
-            .two-col {{ 
-                display: grid; 
-                grid-template-columns: 1fr; 
-                gap: 16px; 
-            }}
-            @media (min-width: 860px) {{
-                .two-col {{ 
-                    grid-template-columns: 1fr 400px; 
-                    align-items: start; 
-                }}
-            }}
-            .field {{ 
-                display: flex; 
-                gap: 12px; 
-                align-items: stretch; 
-            }}
-            .field input {{ 
-                flex: 1; 
-            }}
-            .toast {{
-                position: fixed;
-                inset: auto 20px 20px auto;
-                background: rgba(37, 26, 20, 0.92);
-                color: white;
-                border-radius: var(--radius-md);
-                padding: 12px 20px;
-                font-size: 14px;
-                font-weight: 500;
-                box-shadow: var(--shadow-lg);
-                opacity: 0;
-                transform: translateY(12px);
-                transition: opacity 0.25s ease, transform 0.25s ease;
-                pointer-events: none;
-                z-index: 1000;
-            }}
-            .toast.show {{ 
-                opacity: 1; 
-                transform: translateY(0); 
-            }}
-            @media (max-width: 640px) {{
-                .wrap {{ padding: 24px 16px 60px; }}
-                header {{ margin-bottom: 32px; flex-direction: column; gap: 20px; }}
-                .hero {{ padding: 24px; }}
-                .hero h2 {{ font-size: 26px; }}
-                .searchbar {{ flex-direction: column; align-items: stretch; }}
-                .row {{ flex-direction: column; gap: 16px; }}
-                .actions {{ width: 100%; justify-content: flex-start; }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="wrap">
-            <header>
-                <div class="brand">
-                    <a class="mark" href="/" aria-label="Home">{}</a>
-                    <div>
-                        <h1><a href="/">{}</a></h1>
-                        <p>{}</p>
-                    </div>
-                </div>
-                <nav>
-                    <a class="btn" href="/">Home</a>
-                </nav>
-            </header>
-            {}
-            <footer>
-                <div>Runs as a single binary. Data persists under <code>data/</code> by default.</div>
-            </footer>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>{}</title>
+    <style>
+        :root {{
+            --bg: #09090b;
+            --surface: #121214;
+            --surface-hover: #1c1c1f;
+            --border: #27272a;
+            --border-hover: #3f3f46;
+            
+            --text-main: #ededed;
+            --text-muted: #a1a1aa;
+            --text-faint: #52525b;
+            
+            --accent: #fff;
+            --accent-bg: #fff;
+            --accent-text: #000;
+            
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --font-mono: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace;
+            
+            --radius: 6px;
+            --container-width: 800px;
+        }}
+
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        
+        body {{
+            background-color: var(--bg);
+            color: var(--text-main);
+            font-family: var(--font-sans);
+            font-size: 14px;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }}
+
+        a {{ text-decoration: none; color: inherit; transition: color 0.2s; }}
+        a:hover {{ color: var(--accent); }}
+
+        /* Utility */
+        .container {{
+            width: 100%;
+            max-width: var(--container-width);
+            margin: 0 auto;
+            padding: 0 24px;
+        }}
+        .flex {{ display: flex; align-items: center; }}
+        .gap-2 {{ gap: 8px; }}
+        .gap-4 {{ gap: 16px; }}
+        .mono {{ font-family: var(--font-mono); font-size: 0.9em; }}
+        .muted {{ color: var(--text-muted); }}
+
+        /* Navigation */
+        header {{
+            border-bottom: 1px solid var(--border);
+            padding: 16px 0;
+            position: sticky;
+            top: 0;
+            background: rgba(9, 9, 11, 0.8);
+            backdrop-filter: blur(8px);
+            z-index: 10;
+        }}
+        .nav-inner {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .brand {{
+            font-weight: 700;
+            font-size: 16px;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .brand-dot {{
+            width: 8px;
+            height: 8px;
+            background: var(--accent);
+            border-radius: 50%;
+        }}
+
+        /* Inputs & Forms */
+        .search-wrapper {{
+            position: relative;
+            width: 100%;
+        }}
+        input[type="text"] {{
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            font-size: 15px;
+            transition: all 0.2s ease;
+            font-family: var(--font-sans);
+        }}
+        input[type="text"]:focus {{
+            outline: none;
+            border-color: var(--text-muted);
+            background: var(--surface-hover);
+        }}
+        
+        /* Buttons */
+        .btn {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: var(--radius);
+            font-weight: 500;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }}
+        .btn-primary {{
+            background: var(--accent-bg);
+            color: var(--accent-text);
+        }}
+        .btn-primary:hover {{
+            opacity: 0.9;
+        }}
+        .btn-ghost {{
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+        }}
+        .btn-ghost:hover {{
+            background: var(--surface-hover);
+            border-color: var(--border-hover);
+        }}
+        .btn-icon {{
+            padding: 8px;
+            color: var(--text-muted);
+        }}
+        .btn-icon:hover {{
+            color: var(--text-main);
+            background: var(--surface-hover);
+            border-radius: var(--radius);
+        }}
+
+        /* Lists & Cards */
+        .results-list {{
+            list-style: none;
+            margin-top: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 1px; /* Divider look */
+            background: var(--border); /* Creates lines between items */
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }}
+        .list-item {{
+            background: var(--bg);
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            transition: background 0.15s;
+        }}
+        .list-item:hover {{
+            background: var(--surface);
+        }}
+        .item-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+        }}
+        .item-title {{
+            font-weight: 500;
+            font-size: 15px;
+            color: var(--text-main);
+            line-height: 1.4;
+        }}
+        .item-meta {{
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+            align-items: center;
+            margin-top: 4px;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--surface-hover);
+            border: 1px solid var(--border);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+        }}
+        
+        /* Hero Section */
+        .hero {{
+            padding: 80px 0;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+        }}
+        .hero h2 {{
+            font-size: 32px;
+            font-weight: 600;
+            letter-spacing: -0.03em;
+        }}
+        .hero p {{
+            color: var(--text-muted);
+            max-width: 460px;
+            font-size: 16px;
+        }}
+        .hero-search {{
+            width: 100%;
+            max-width: 500px;
+            margin-top: 16px;
+        }}
+
+        /* Detail Page */
+        .detail-card {{
+            margin-top: 32px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+            padding: 32px;
+        }}
+        .detail-header {{
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 24px;
+            margin-bottom: 24px;
+        }}
+        .detail-title {{
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }}
+        .magnet-box {{
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 4px;
+            display: flex;
+            gap: 8px;
+            margin-top: 16px;
+        }}
+        .magnet-box input {{
+            border: none;
+            background: transparent;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-muted);
+        }}
+        .magnet-box input:focus {{ background: transparent; }}
+
+        /* Footer */
+        footer {{
+            margin-top: auto;
+            border-top: 1px solid var(--border);
+            padding: 32px 0;
+            color: var(--text-faint);
+            font-size: 13px;
+            text-align: center;
+        }}
+        
+        /* Toast */
+        .toast {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--text-main);
+            color: var(--bg);
+            padding: 10px 16px;
+            border-radius: var(--radius);
+            font-weight: 500;
+            font-size: 13px;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none;
+            z-index: 100;
+        }}
+        .toast.show {{ transform: translateY(0); opacity: 1; }}
+
+        /* Mobile */
+        @media (max-width: 600px) {{
+            :root {{ --container-width: 100%; }}
+            .hero {{ padding: 40px 0; }}
+            .hero h2 {{ font-size: 24px; }}
+            .item-header {{ flex-direction: column; gap: 8px; }}
+        }}
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container nav-inner">
+            <a href="/" class="brand">
+                <div class="brand-dot"></div>
+                {}
+            </a>
+            <nav class="flex gap-4">
+                <a href="/" class="muted" style="font-size:13px;">Home</a>
+                <a href="/search" class="muted" style="font-size:13px;">Browse</a>
+            </nav>
         </div>
-        <div id="toast" class="toast" role="status" aria-live="polite"></div>
-        <script>
-            function toast(msg) {{
-                const el = document.getElementById('toast');
-                if (!el) return;
-                el.textContent = msg;
-                el.classList.add('show');
-                clearTimeout(el._t);
-                el._t = setTimeout(() => el.classList.remove('show'), 900);
+    </header>
+
+    <div class="container">
+        {}
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>Local torrent indexing &middot; Data persists in <code>data/</code></p>
+        </div>
+    </footer>
+
+    <div id="toast" class="toast">Notification</div>
+
+    <script>
+        const toastEl = document.getElementById('toast');
+        let toastTimeout;
+        
+        function showToast(msg) {{
+            toastEl.textContent = msg;
+            toastEl.classList.add('show');
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => toastEl.classList.remove('show'), 2000);
+        }}
+
+        document.addEventListener('click', async (e) => {{
+            const btn = e.target.closest('[data-copy]');
+            if (!btn) return;
+            e.preventDefault();
+            
+            const text = btn.getAttribute('data-copy');
+            if (!text) return;
+            
+            try {{
+                await navigator.clipboard.writeText(text);
+                showToast('Copied to clipboard');
+            }} catch (err) {{
+                // Fallback
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                showToast('Copied');
             }}
-            async function copyText(text) {{
-                try {{
-                    await navigator.clipboard.writeText(text);
-                    toast('Copied');
-                }} catch (e) {{
-                    // Fallback for older browsers
-                    const ta = document.createElement('textarea');
-                    ta.value = text;
-                    ta.style.position = 'fixed';
-                    ta.style.opacity = '0';
-                    document.body.appendChild(ta);
-                    ta.focus();
-                    ta.select();
-                    try {{ document.execCommand('copy'); toast('Copied'); }} catch (_) {{ toast('Copy failed'); }}
-                    document.body.removeChild(ta);
-                }}
-            }}
-            document.addEventListener('click', (ev) => {{
-                const btn = ev.target.closest('[data-copy]');
-                if (!btn) return;
-                ev.preventDefault();
-                const text = btn.getAttribute('data-copy') || '';
-                if (text.trim().length === 0) return;
-                copyText(text);
-            }});
-        </script>
-    </body>
-</html>"#,
-"##,
+        }});
+    </script>
+</body>
+</html>"##,
         html_escape(&full_title),
-        ICON_SEARCH,
         html_escape(APP_TITLE),
-        html_escape(APP_TAGLINE),
         body
     ))
 }
@@ -450,16 +416,22 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Resul
 
 async fn home() -> impl IntoResponse {
     page(
-        "Search",
+        "Home",
         format!(
-            r#"<main class="card hero">
-    <h2>Search the index</h2>
-    <p>Type a title. Serma continuously discovers hashes, enriches metadata, and ranks by seeders.</p>
-    <form action="/search" method="get" class="searchbar" role="search">
-        <input name="q" placeholder="Search titles…" autocomplete="off" />
-        <button class="btn primary inline" type="submit">{} Search</button>
-    </form>
-</main>"#,
+            r##"
+            <main class="hero">
+                <h2>Local Index</h2>
+                <p>Serma continuously discovers hashes, enriches metadata, and ranks by seeders locally.</p>
+                <form action="/search" method="get" class="hero-search">
+                    <div class="search-wrapper">
+                        <input type="text" name="q" placeholder="Search by title..." autocomplete="off" autofocus />
+                    </div>
+                    <div style="margin-top: 16px; display: flex; gap: 8px; justify-content: center;">
+                         <button type="submit" class="btn btn-primary">{} Search</button>
+                    </div>
+                </form>
+            </main>
+            "##,
             ICON_SEARCH
         ),
     )
@@ -486,70 +458,72 @@ async fn search_html(
         let info_hash = hit.info_hash.unwrap_or_default();
         let title = hit.title.unwrap_or_else(|| "(untitled)".to_string());
         let magnet = hit.magnet.unwrap_or_default();
-
-        let magnet_actions_html = if magnet.trim().is_empty() {
-            "<span class=\"meta\">No magnet</span>".to_string()
+        let short_hash = if info_hash.len() > 12 {
+            &info_hash[0..12]
         } else {
+            &info_hash
+        };
+
+        let actions = if !magnet.is_empty() {
             format!(
-                "<a class=\"btn primary inline\" rel=\"nofollow\" href=\"{}\" title=\"Open magnet\">{} Magnet</a> <a class=\"btn icononly\" href=\"#\" data-copy=\"{}\" title=\"Copy magnet link\" aria-label=\"Copy magnet link\">{}</a>",
+                r##"<a href="{}" class="btn btn-icon" title="Magnet">{}</a>
+                   <button class="btn btn-icon" data-copy="{}" title="Copy Link">{}</button>"##,
                 html_escape(&magnet),
                 ICON_MAGNET,
                 html_escape(&magnet),
                 ICON_COPY
             )
-        };
-        let details_html = if info_hash.trim().is_empty() {
-            "".to_string()
         } else {
-            format!(
-                "<a class=\"btn\" href=\"/t/{}\">Details</a>",
-                html_escape(&info_hash)
-            )
+            String::new()
         };
 
         items.push_str(&format!(
-                        r#"<li class="card">
-    <div class="row">
-    <div>
-            <div class="title">{}</div>
-            <div class="meta">Info hash: <code class="hash">{}</code></div>
-    </div>
-        <div class="actions">
-            <span class="pill">Seeders: {}</span>
-      {}{}
-    </div>
-  </div>
-</li>"#,
-            html_escape(&title),
+            r##"
+            <li class="list-item">
+                <div class="item-header">
+                    <div>
+                        <a href="/t/{}" class="item-title">{}</a>
+                        <div class="item-meta">
+                            <span class="badge">S: {}</span>
+                            <span class="mono">#{}</span>
+                        </div>
+                    </div>
+                    <div class="flex">
+                        {}
+                        <a href="/t/{}" class="btn btn-icon">{}</a>
+                    </div>
+                </div>
+            </li>
+            "##,
             html_escape(&info_hash),
+            html_escape(&title),
             hit.seeders,
-            magnet_actions_html,
-            if details_html.is_empty() {
-                "".to_string()
-            } else {
-                format!(" {}", details_html)
-            }
+            html_escape(short_hash),
+            actions,
+            html_escape(&info_hash),
+            ICON_ARROW_RIGHT
         ));
     }
 
     let results_html = if items.is_empty() {
-        "<p class=\"empty\">No results.</p>".to_string()
+        r##"<div style="text-align:center; padding: 40px; color: var(--text-muted);">No results found.</div>"##
+            .to_string()
     } else {
-        format!("<ul class=\"results\">{}</ul>", items)
+        format!("<ul class=\"results-list\">{}</ul>", items)
     };
 
     page(
-        &format!("Search: {}", q.trim()),
+        &q,
         format!(
-                        r#"<main class="card">
-    <form action="/search" method="get" class="searchbar" role="search">
-        <input name="q" value="{}" placeholder="Search titles…" />
-        <button class="btn primary inline" type="submit">{} Search</button>
-  </form>
-  {}
-</main>"#,
+            r##"
+            <div style="margin-top: 32px;">
+                <form action="/search" method="get" class="search-wrapper">
+                    <input type="text" name="q" value="{}" placeholder="Search..." autocomplete="off" />
+                </form>
+                {}
+            </div>
+            "##,
             html_escape(&q),
-            ICON_SEARCH,
             results_html
         ),
     )
@@ -565,7 +539,6 @@ async fn search_api(
     } else {
         state.index.search(&q, 25).unwrap_or_default()
     };
-
     Json(hits)
 }
 
@@ -578,62 +551,62 @@ async fn torrent_page(
     let title = record
         .as_ref()
         .and_then(|r| r.title.clone())
-        .unwrap_or_else(|| format!("Item {}", html_escape(&info_hash)));
+        .unwrap_or_else(|| "Unknown Title".to_string());
 
     let magnet = record
         .as_ref()
         .and_then(|r| r.magnet.clone())
         .unwrap_or_default();
-    let magnet_html = if magnet.trim().is_empty() {
-        "<span class=\"meta\">No magnet link available yet.</span>".to_string()
-    } else {
-        format!(
-            r##"<div class="two-col">
-    <div class="card" style="padding:14px; box-shadow:none; background: rgba(255,255,255,0.45);">
-        <div class="meta" style="margin-bottom:6px;">Magnet link</div>
-        <div class="field searchbar" style="margin:0;">
-            <input value="{}" readonly />
-            <a class="btn icononly" href="#" data-copy="{}" title="Copy magnet link" aria-label="Copy magnet link">{}</a>
-            <a class="btn primary inline" rel="nofollow" href="{}" title="Open magnet">{} Magnet</a>
-        </div>
-    </div>
-    <div></div>
-</div>"##,
-            html_escape(&magnet),
-            html_escape(&magnet),
-            ICON_COPY,
-            html_escape(&magnet),
-            ICON_MAGNET
-        )
-    };
 
     let seeders = record.as_ref().map(|r| r.seeders).unwrap_or(0);
-    let has_metadata = record
-        .as_ref()
-        .and_then(|r| r.info_bencode_base64.as_deref())
-        .is_some_and(|s| !s.trim().is_empty());
+    
+    let magnet_section = if magnet.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r##"
+            <div class="magnet-box">
+                <div class="flex" style="padding: 0 12px; color: var(--text-muted);">{}</div>
+                <input type="text" value="{}" readonly onclick="this.select()" />
+                <button class="btn btn-ghost" data-copy="{}">Copy</button>
+                <a href="{}" class="btn btn-primary">Open</a>
+            </div>
+            "##,
+            ICON_MAGNET,
+            html_escape(&magnet),
+            html_escape(&magnet),
+            html_escape(&magnet)
+        )
+    };
 
     page(
         &title,
         format!(
-                        r#"<main class="card">
-    <div class="row">
-    <div>
-            <div class="title">{}</div>
-            <div class="meta">Info hash: <code class="hash">{}</code></div>
-    </div>
-        <div class="actions">
-            <span class="pill">Seeders: {}</span>
-            <span class="pill">Metadata: {}</span>
-    </div>
-  </div>
-  <div style="margin-top: 14px;">{}</div>
-</main>"#,
+            r##"
+            <main class="detail-card">
+                <div class="detail-header">
+                    <div style="color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">Torrent Detail</div>
+                    <h1 class="detail-title">{}</h1>
+                    <div class="flex gap-4">
+                        <span class="badge">Seeders: {}</span>
+                        <span class="mono muted">{}</span>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 24px;">
+                    <h3 style="font-size: 14px; font-weight: 500; margin-bottom: 8px;">Magnet Link</h3>
+                    {}
+                </div>
+
+                <div style="margin-top: 32px;">
+                    <a href="/search" class="btn btn-ghost" style="display:inline-flex;">&larr; Back to Search</a>
+                </div>
+            </main>
+            "##,
             html_escape(&title),
-            html_escape(&info_hash),
             seeders,
-            if has_metadata { "yes" } else { "no" },
-            magnet_html
+            html_escape(&info_hash),
+            magnet_section
         ),
     )
 }
