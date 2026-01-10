@@ -35,7 +35,7 @@ pub async fn run(state: AppState) {
     // Max number of index entries processed per tick.
     let batch = env_u64("SERMA_CLEANUP_BATCH", 5_000) as usize;
     // Wall-clock budget per tick.
-    let max_ms = env_u64("SERMA_CLEANUP_MAX_MS", 200);
+    let max_ms = env_u64("SERMA_CLEANUP_MAX_MS", 1_000);
 
     // Records not seen for this long are considered inactive.
     let ttl_secs = env_u64("SERMA_TORRENT_TTL_SECS", 24 * 60 * 60);
