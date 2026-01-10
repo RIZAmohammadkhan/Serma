@@ -1,5 +1,5 @@
 use crate::{AppState, storage};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Instant;
 use tokio::net::UdpSocket;
@@ -21,8 +21,15 @@ const DEFAULT_BOOTSTRAP: &[&str] = &[
 ];
 
 const MAX_KNOWN_NODES: usize = 10_000;
-const MAX_SEEN_HASHES: usize = 50_000;
-const SEEN_TTL: Duration = Duration::from_secs(30 * 60);
+
+// Dedupe for incoming/sampled info-hashes.
+//
+// Goal: avoid hammering sled with repeated upserts for the same hot hash.
+// We use a rotating Bloom filter (two windows) to keep memory bounded and
+// prevent "clear-and-thrash" behavior under high cardinality.
+const SEEN_ROTATE_EVERY: Duration = Duration::from_secs(15 * 60);
+const SEEN_BITS_POW2: u32 = 26; // 2^26 bits ~= 8 MiB per filter, 16 MiB total (two windows)
+const SEEN_K: u8 = 12;
 
 const SAMPLE_EVERY: Duration = Duration::from_secs(5);
 const SAMPLE_PER_TICK: usize = 12;
@@ -73,7 +80,7 @@ pub async fn run(state: AppState) {
     let mut known_nodes: VecDeque<SocketAddr> = VecDeque::new();
     let mut known_set: HashSet<SocketAddr> = HashSet::new();
 
-    let mut seen_hashes: HashMap<[u8; 20], Instant> = HashMap::new();
+    let mut seen_hashes = RollingBloom::new(SEEN_BITS_POW2, SEEN_K, SEEN_ROTATE_EVERY);
 
     // Bootstrap right away.
     for addr in resolve_bootstrap().await {
@@ -99,7 +106,8 @@ pub async fn run(state: AppState) {
                 sample_tick(&socket, &node_id, &mut known_nodes).await;
             }
             _ = gc_int.tick() => {
-                gc_seen(&mut seen_hashes);
+                // Keep the rolling Bloom filter fresh.
+                seen_hashes.maybe_rotate();
                 if known_nodes.len() > MAX_KNOWN_NODES {
                     while known_nodes.len() > MAX_KNOWN_NODES {
                         if let Some(old) = known_nodes.pop_front() {
@@ -204,28 +212,116 @@ fn ingest_spidered_hash(state: &AppState, info_hash_hex: &str) -> anyhow::Result
     Ok(())
 }
 
-fn should_accept_hash(seen: &mut HashMap<[u8; 20], Instant>, hash: [u8; 20]) -> bool {
-    let now = Instant::now();
-    if let Some(prev) = seen.get(&hash) {
-        if now.duration_since(*prev) < SEEN_TTL {
-            return false;
-        }
-    }
-    if seen.len() >= MAX_SEEN_HASHES {
-        // Best-effort eviction: drop some oldest-ish entries by TTL sweep.
-        gc_seen(seen);
-        if seen.len() >= MAX_SEEN_HASHES {
-            // Still huge; just clear to avoid unbounded growth.
-            seen.clear();
-        }
-    }
-    seen.insert(hash, now);
-    true
+fn should_accept_hash(seen: &mut RollingBloom, hash: [u8; 20]) -> bool {
+    // Fast in-memory dedupe: if we've already seen this hash recently,
+    // don't touch the database or index.
+    seen.test_and_set(hash)
 }
 
-fn gc_seen(seen: &mut HashMap<[u8; 20], Instant>) {
-    let now = Instant::now();
-    seen.retain(|_, t| now.duration_since(*t) < SEEN_TTL);
+struct RollingBloom {
+    current: BloomFilter,
+    previous: BloomFilter,
+    rotate_every: Duration,
+    last_rotate: Instant,
+}
+
+impl RollingBloom {
+    fn new(bits_pow2: u32, k: u8, rotate_every: Duration) -> Self {
+        Self {
+            current: BloomFilter::new_pow2(bits_pow2, k),
+            previous: BloomFilter::new_pow2(bits_pow2, k),
+            rotate_every,
+            last_rotate: Instant::now(),
+        }
+    }
+
+    fn maybe_rotate(&mut self) {
+        if self.last_rotate.elapsed() < self.rotate_every {
+            return;
+        }
+        let bits_pow2 = self.current.bits_pow2;
+        let k = self.current.k;
+        self.previous = std::mem::replace(
+            &mut self.current,
+            BloomFilter::new_pow2(bits_pow2, k),
+        );
+        self.last_rotate = Instant::now();
+    }
+
+    fn test_and_set(&mut self, hash: [u8; 20]) -> bool {
+        self.maybe_rotate();
+
+        // Check both windows first. If either says "seen", we skip the DB.
+        if self.current.probably_contains(&hash) || self.previous.probably_contains(&hash) {
+            return false;
+        }
+
+        // New hash: record it in the current window.
+        self.current.insert(&hash);
+        true
+    }
+}
+
+struct BloomFilter {
+    bits: Vec<u64>,
+    bits_pow2: u32,
+    mask: u64,
+    k: u8,
+}
+
+impl BloomFilter {
+    fn new_pow2(bits_pow2: u32, k: u8) -> Self {
+        // m = 2^bits_pow2 bits
+        let m_bits: usize = 1usize
+            .checked_shl(bits_pow2)
+            .expect("bits_pow2 too large");
+        let words = (m_bits + 63) / 64;
+        Self {
+            bits: vec![0u64; words],
+            bits_pow2,
+            mask: (m_bits as u64).saturating_sub(1),
+            k: k.max(1),
+        }
+    }
+
+    #[inline]
+    fn probably_contains(&self, item: &[u8; 20]) -> bool {
+        let (h1, h2) = bloom_hashes(item);
+        for i in 0..self.k {
+            let bit_index = h1
+                .wrapping_add((i as u64).wrapping_mul(h2))
+                & self.mask;
+            let word = (bit_index >> 6) as usize;
+            let bit = (bit_index & 63) as u32;
+            let bitmask = 1u64 << bit;
+            if (self.bits[word] & bitmask) == 0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[inline]
+    fn insert(&mut self, item: &[u8; 20]) {
+        let (h1, h2) = bloom_hashes(item);
+        for i in 0..self.k {
+            let bit_index = h1
+                .wrapping_add((i as u64).wrapping_mul(h2))
+                & self.mask;
+            let word = (bit_index >> 6) as usize;
+            let bit = (bit_index & 63) as u32;
+            self.bits[word] |= 1u64 << bit;
+        }
+    }
+}
+
+#[inline]
+fn bloom_hashes(item: &[u8; 20]) -> (u64, u64) {
+    // Double-hashing scheme: h_i = h1 + i*h2.
+    // Make h2 odd to better cover the bitspace.
+    let h1 = xxhash_rust::xxh3::xxh3_64(item);
+    let h2 = xxhash_rust::xxh3::xxh3_64_with_seed(item, 0x9E37_79B9_7F4A_7C15) | 1;
+    (h1, h2)
 }
 
 fn push_node(addr: SocketAddr, q: &mut VecDeque<SocketAddr>, set: &mut HashSet<SocketAddr>) {

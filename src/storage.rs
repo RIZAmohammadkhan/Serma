@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TORRENT_RECORD_MAGIC: [u8; 4] = *b"SRM1";
+const MISSING_INFO_TREE: &[u8] = b"idx_missing_info";
+const META_TREE: &[u8] = b"meta";
+const META_MISSING_INFO_BUILT_V1: &[u8] = b"missing_info_index_built_v1";
 
 fn bincode_opts() -> impl bincode::Options {
     // Varint encoding reduces disk usage for small integers.
@@ -76,6 +79,63 @@ fn key_for_hash(info_hash_hex: &str) -> Vec<u8> {
     key
 }
 
+fn has_info(record: &TorrentRecord) -> bool {
+    record
+        .info_bencode_base64
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+}
+
+fn missing_info_tree(db: &sled::Db) -> sled::Result<sled::Tree> {
+    db.open_tree(MISSING_INFO_TREE)
+}
+
+fn meta_tree(db: &sled::Db) -> sled::Result<sled::Tree> {
+    db.open_tree(META_TREE)
+}
+
+fn sync_missing_info_index(db: &sled::Db, record: &TorrentRecord) -> anyhow::Result<()> {
+    let tree = missing_info_tree(db)?;
+    let key = record.info_hash_hex.as_bytes();
+    if has_info(record) {
+        let _ = tree.remove(key)?;
+    } else {
+        // Value is unused; presence of key indicates "needs enrich".
+        tree.insert(key, &[])?;
+    }
+    Ok(())
+}
+
+/// Ensures the missing-info index exists and is populated.
+///
+/// This replaces the previous runtime O(n) scan in `list_missing_info` with an indexed lookup.
+/// Rebuilding can still be O(n) once, but happens only on first startup after upgrade.
+pub fn ensure_missing_info_index(db: &sled::Db) -> anyhow::Result<()> {
+    let meta = meta_tree(db)?;
+    if meta.get(META_MISSING_INFO_BUILT_V1)?.is_some() {
+        return Ok(());
+    }
+
+    let tree = missing_info_tree(db)?;
+    let mut missing_count: usize = 0;
+    let mut total: usize = 0;
+    for item in db.scan_prefix(b"torrent:") {
+        let (k, v) = item?;
+        total += 1;
+        let record = decode_torrent_record_maybe_migrate(db, &k, &v)?;
+        if has_info(&record) {
+            let _ = tree.remove(record.info_hash_hex.as_bytes())?;
+        } else {
+            tree.insert(record.info_hash_hex.as_bytes(), &[])?;
+            missing_count += 1;
+        }
+    }
+
+    meta.insert(META_MISSING_INFO_BUILT_V1, b"1")?;
+    tracing::info!(total, missing_count, "storage: built missing-info index");
+    Ok(())
+}
+
 pub fn upsert_first_seen(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<TorrentRecord> {
     let key = key_for_hash(info_hash_hex);
     let now = now_unix_ms();
@@ -98,25 +158,53 @@ pub fn upsert_first_seen(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<T
     };
 
     db.insert(key, encode_torrent_record(&record)?)?;
+    // Keep missing-info index consistent.
+    let _ = sync_missing_info_index(db, &record);
     Ok(record)
 }
 
 pub fn list_missing_info(db: &sled::Db, limit: usize) -> anyhow::Result<Vec<TorrentRecord>> {
+    let tree = missing_info_tree(db)?;
+
+    // If the index hasn't been built yet (e.g. user upgraded but restarted without
+    // calling `ensure_missing_info_index`), we can still return quickly.
+    // Startup should call `ensure_missing_info_index`; this is just a safe fallback.
+    if tree.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut out = Vec::new();
-    for item in db.scan_prefix(b"torrent:") {
-        let (k, v) = item?;
-        let record = decode_torrent_record_maybe_migrate(db, &k, &v)?;
-        let has_info = record
-            .info_bencode_base64
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty());
-        if !has_info {
-            out.push(record);
-            if out.len() >= limit {
-                break;
-            }
+    for item in tree.iter() {
+        let (hash_bytes, _) = item?;
+        let hash_hex = std::str::from_utf8(&hash_bytes)
+            .ok()
+            .map(str::to_string);
+        let Some(hash_hex) = hash_hex else {
+            // Corrupt key; drop it.
+            let _ = tree.remove(hash_bytes)?;
+            continue;
+        };
+
+        let key = key_for_hash(&hash_hex);
+        let Some(bytes) = db.get(&key)? else {
+            // Record was deleted; drop index entry.
+            let _ = tree.remove(hash_bytes)?;
+            continue;
+        };
+
+        let record = decode_torrent_record_maybe_migrate(db, &key, &bytes)?;
+        if has_info(&record) {
+            // Index is stale; fix it.
+            let _ = tree.remove(hash_bytes)?;
+            continue;
+        }
+
+        out.push(record);
+        if out.len() >= limit {
+            break;
         }
     }
+
     Ok(out)
 }
 
@@ -135,6 +223,7 @@ pub fn set_metadata(
     record.info_bencode_base64 = Some(info_bencode_base64.to_string());
     let key = key_for_hash(info_hash_hex);
     db.insert(key, encode_torrent_record(&record)?)?;
+    let _ = sync_missing_info_index(db, &record);
     Ok(record)
 }
 
@@ -147,6 +236,7 @@ pub fn set_seeders(
     record.seeders = seeders;
     let key = key_for_hash(info_hash_hex);
     db.insert(key, encode_torrent_record(&record)?)?;
+    let _ = sync_missing_info_index(db, &record);
     Ok(record)
 }
 
@@ -161,6 +251,7 @@ pub fn set_magnet(
     }
     let key = key_for_hash(info_hash_hex);
     db.insert(key, encode_torrent_record(&record)?)?;
+    let _ = sync_missing_info_index(db, &record);
     Ok(record)
 }
 
@@ -176,5 +267,8 @@ pub fn get(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<Option<TorrentR
 pub fn delete(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<()> {
     let key = key_for_hash(info_hash_hex);
     let _ = db.remove(key)?;
+    if let Ok(tree) = missing_info_tree(db) {
+        let _ = tree.remove(info_hash_hex.as_bytes());
+    }
     Ok(())
 }

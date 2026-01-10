@@ -32,6 +32,9 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data_dir).context("create data dir")?;
 
     let db = sled::open(data_dir.join("sled")).context("open sled db")?;
+    // Build secondary indexes (one-time migration) so background tasks can find work without
+    // scanning the full DB each loop.
+    crate::storage::ensure_missing_info_index(&db).context("build missing-info index")?;
     let index = index::SearchIndex::open_or_create(data_dir.join("tantivy"))
         .context("open/create tantivy index")?;
 

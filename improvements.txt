@@ -1,7 +1,0 @@
-
-Fragile Spidering: The spider logic doesn't use a Bloom filter. If a popular torrent is being announced 100 times a second, the spider will attempt 100 database writes/reads a second for the same hash, trashing the disk I/O.
-
-The "Scan" Bottleneck: In enrich.rs, the code storage::list_missing_info scans the database to find work. As soon as you have 50,000 torrents, the application will spend 100% of its CPU just iterating over database keys to find the next item to process.
-
-
-Make UI have nice mminimial look modern use brown white light brown (rust and chocolaty apallete) color pallete, also minimal in feeling but modern. Also it should look like simple ai website it should be really good ui like a master ahs designed it.
