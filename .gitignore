@@ -1,0 +1,36 @@
+/target/
+
+# Data dirs (local runtime state)
+/data/
+
+# Optional local env files
+.env
+.env.*
+
+# Logs
+*.log
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Rust / Cargo
+**/*.rs.bk
+
+# Coverage / profiling
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.lcov
+coverage/
+
+# If you use direnv
+.direnv/
+.envrc

@@ -1,0 +1,19 @@
+[package]
+name = "serma"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+axum = "0.7"
+base64 = "0.22"
+bytes = "1"
+hex = "0.4"
+rbit = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sled = "0.34"
+tantivy = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "io-util", "time", "net", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
