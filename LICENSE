@@ -1,0 +1,195 @@
+FAIR USE LICENSE AND DISCLAIMER
+
+Copyright (c) 2026 Serma Contributors
+
+TERMS AND CONDITIONS
+
+1. EDUCATIONAL AND RESEARCH USE ONLY
+
+This software ("Serma") is provided EXCLUSIVELY for educational, research, and 
+personal learning purposes. By using, copying, modifying, or distributing this 
+software, you agree to these terms.
+
+2. PERMITTED USE
+
+You are permitted to:
+- Use this software for personal, non-commercial purposes
+- Study how the software works
+- Modify the software for your own use
+- Share modifications with others under these same terms
+
+3. PROHIBITED USE
+
+You are EXPRESSLY PROHIBITED from:
+- Using this software for any illegal purpose
+- Using this software to infringe upon copyright or intellectual property rights
+- Using this software to distribute copyrighted material without authorization
+- Using this software in any manner that violates local, state, national, or 
+  international law
+- Commercially exploiting this software without explicit written permission
+- Removing or modifying this license and disclaimer
+
+4. NO WARRANTY
+
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. 
+
+THE AUTHORS AND COPYRIGHT HOLDERS MAKE NO REPRESENTATIONS OR WARRANTIES ABOUT 
+THE SUITABILITY OF THIS SOFTWARE FOR ANY PURPOSE.
+
+5. LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR:
+- ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+- ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA, OR PROFITS
+- BUSINESS INTERRUPTION OR ANY THEORY OF LIABILITY
+- CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- ANY LEGAL CONSEQUENCES ARISING FROM YOUR USE OF THIS SOFTWARE
+
+This applies even if the authors have been advised of the possibility of such 
+damages.
+
+6. USER RESPONSIBILITY
+
+BY USING THIS SOFTWARE, YOU ACKNOWLEDGE AND AGREE THAT:
+
+a) You are solely responsible for your use of this software
+b) You will comply with all applicable laws and regulations
+c) You understand that this software interacts with peer-to-peer networks
+d) You are aware of the legal implications of using DHT and BitTorrent technologies
+e) You will not use this software to facilitate copyright infringement
+f) You understand that the authors do not endorse, encourage, or facilitate any 
+   illegal activity
+g) You release the authors from any and all liability related to your use of 
+   this software
+
+7. INDEMNIFICATION
+
+You agree to indemnify, defend, and hold harmless the authors, copyright holders, 
+and contributors from and against any and all claims, damages, losses, costs, 
+expenses, and liabilities (including reasonable attorneys' fees) arising from or 
+related to your use or misuse of this software.
+
+8. COPYRIGHT NOTICE
+
+This software discovers and indexes metadata about files shared on public 
+peer-to-peer networks. The software:
+- Does NOT host, store, or distribute copyrighted content
+- Does NOT provide direct downloads of any content
+- Only indexes publicly available metadata (file names, hashes, etc.)
+- Cannot control what content exists on peer-to-peer networks
+
+The presence of a torrent in this index does not imply that:
+- The content is legal to download in your jurisdiction
+- The content is free from copyright protection
+- The authors endorse or recommend downloading the content
+
+9. JURISDICTION AND LEGAL COMPLIANCE
+
+This software may be illegal to use in certain jurisdictions. You are responsible 
+for determining whether your use complies with applicable laws in your location.
+
+Some jurisdictions prohibit or restrict the use of peer-to-peer file sharing 
+technologies. You assume all responsibility for compliance with local laws.
+
+10. NO AFFILIATION
+
+This software is not affiliated with, endorsed by, or connected to:
+- BitTorrent Inc. or any BitTorrent client developers
+- Any content creators or copyright holders
+- Any file sharing services or platforms
+- Any commercial entities
+
+11. MODIFICATIONS AND FORKS
+
+If you modify or fork this software:
+- You must retain this license and all disclaimers
+- You must clearly indicate that your version is modified
+- You must not imply endorsement by the original authors
+- You assume all responsibility for your modifications
+
+12. TERMINATION
+
+Your rights under this license terminate automatically if you fail to comply with 
+any of its terms. Upon termination, you must cease all use and destroy all copies 
+of the software.
+
+13. DATA PRIVACY
+
+Users of this software should be aware that:
+- DHT participation exposes your IP address to other network participants
+- Query patterns may be observable by network operators
+- Consider using a VPN if privacy is a concern
+- The authors are not responsible for any privacy breaches
+
+14. NO SUPPORT OBLIGATION
+
+The authors are under no obligation to:
+- Provide support, updates, or bug fixes
+- Respond to issues or questions
+- Maintain the software
+- Ensure compatibility with any system or purpose
+
+15. ACCEPTANCE
+
+BY USING THIS SOFTWARE IN ANY WAY, YOU INDICATE YOUR ACCEPTANCE OF THESE TERMS.
+
+IF YOU DO NOT AGREE TO THESE TERMS, DO NOT USE THIS SOFTWARE.
+
+16. SEVERABILITY
+
+If any provision of this license is held to be unenforceable or invalid, that 
+provision shall be limited or eliminated to the minimum extent necessary, and the 
+remaining provisions shall remain in full force and effect.
+
+17. ENTIRE AGREEMENT
+
+This license constitutes the entire agreement between you and the authors 
+regarding the use of this software.
+
+18. GOVERNING LAW
+
+This license shall be governed by and construed in accordance with applicable 
+international copyright and software licensing principles.
+
+---
+
+EXPLICIT DISCLAIMER OF RESPONSIBILITY
+
+THE AUTHORS AND CONTRIBUTORS EXPLICITLY DISCLAIM ANY RESPONSIBILITY FOR:
+
+- How this software is used
+- What content is discovered or indexed
+- Any illegal activity conducted using this software
+- Any harm, damage, or legal consequences resulting from its use
+- Any misuse, abuse, or unauthorized use of this software
+- Any claims by third parties related to copyright infringement
+- Any data loss, system damage, or security breaches
+- Any violation of terms of service of ISPs or other providers
+
+---
+
+FINAL WARNING
+
+This software is a technical demonstration and educational tool. The DHT network 
+and BitTorrent protocol are decentralized systems that contain a wide variety of 
+content, much of which may be copyrighted.
+
+Downloading or distributing copyrighted material without authorization is illegal 
+in most jurisdictions and may result in:
+- Civil lawsuits and monetary damages
+- Criminal prosecution
+- Fines and penalties
+- Imprisonment (in severe cases)
+
+THE AUTHORS STRONGLY DISCOURAGE THE USE OF THIS SOFTWARE FOR ANY PURPOSE THAT 
+VIOLATES COPYRIGHT LAW OR ANY OTHER APPLICABLE LAW.
+
+USE THIS SOFTWARE AT YOUR OWN RISK.
+
+---
+
+For questions about this license: See project repository or documentation.
+
+Date: January 2026

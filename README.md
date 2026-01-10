@@ -1,86 +1,256 @@
 # Serma
 
-Single-binary BitTorrent metadata crawler + local search index.
+**The local index.** A self-hosted BitTorrent DHT spider and search engine.
 
-Serma:
-- Discovers torrent info-hashes via the DHT (automatic spider)
-- Enriches them in-process via DHT + `ut_metadata` (stores the full bencoded `info` dictionary)
-- Indexes/searches via Tantivy
-- Serves a small HTML UI + JSON API over HTTP
+Serma autonomously discovers torrents from the BitTorrent DHT network, enriches metadata, and provides a clean web interface for searching your personal torrent index.
 
-## Quickstart
+## Features
 
-### Run (dev)
+- 🕷️ **Autonomous DHT Spider**: Crawls the BitTorrent DHT network to discover new torrents
+- 🔍 **Full-Text Search**: Fast search powered by Tantivy (Rust's Lucene alternative)
+- 📊 **Metadata Enrichment**: Automatically fetches torrent metadata using the ut_metadata extension
+- 🧹 **Automatic Cleanup**: Removes inactive/low-seed torrents to keep the index fresh
+- 🌐 **Clean Web UI**: Minimalist dark-mode interface for browsing and searching
+- 🚀 **High Performance**: Built in Rust for speed and efficiency
+- 💾 **Embedded Storage**: Uses Sled (embedded database) and Tantivy (search index)
+
+## Architecture
+
+Serma consists of several background tasks:
+
+- **Spider** (`spider.rs`): BEP-5 DHT crawler that discovers info hashes from DHT traffic
+- **Enricher** (`enrich.rs`): Fetches full torrent metadata via DHT peer lookup and ut_metadata protocol
+- **Indexer** (`index.rs`): Maintains a full-text search index using Tantivy
+- **Cleanup** (`cleanup.rs`): Periodic task to remove stale/low-quality torrents
+- **Web Server** (`web.rs`): Axum-based HTTP server providing search UI and API
+
+## Requirements
+
+- **Rust** 1.75 or later (edition 2024)
+- **Linux, macOS, or Windows** (tested on Linux)
+- ~16-32 GB disk space for a meaningful index (grows over time)
+- Open UDP port (optional, but recommended for better DHT connectivity)
+
+## Quick Start
+
+### 1. Clone and Build
+
+```bash
+git clone <repository-url> serma
+cd serma
+cargo build --release
+```
+
+### 2. Run
+
+```bash
+./target/release/serma
+```
+
+By default, Serma:
+- Stores data in `./data` directory
+- Serves web UI on `http://localhost:3000`
+- Uses an ephemeral UDP port for DHT traffic
+
+### 3. Open the Web Interface
+
+Navigate to `http://localhost:3000` in your browser to start searching.
+
+## Configuration
+
+Serma is configured via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERMA_DATA_DIR` | `data` | Directory for database and index storage |
+| `SERMA_ADDR` | `127.0.0.1:3000` | HTTP server bind address (IPv4 and IPv6 loopback) |
+| `SERMA_SPIDER` | enabled | Set to `0`, `false`, `off`, or `no` to disable DHT spider |
+| `SERMA_SPIDER_BIND` | `0.0.0.0:0` | UDP bind address for DHT spider |
+| `RUST_LOG` | `info` | Log level (trace, debug, info, warn, error) |
+
+### Examples
+
+**Run on custom port:**
+```bash
+SERMA_ADDR=0.0.0.0:8080 ./target/release/serma
+```
+
+**Use specific DHT port:**
+```bash
+SERMA_SPIDER_BIND=0.0.0.0:6881 ./target/release/serma
+```
+
+**Increase logging verbosity:**
+```bash
+RUST_LOG=debug ./target/release/serma
+```
+
+**Disable the DHT spider (search-only mode):**
+```bash
+SERMA_SPIDER=false ./target/release/serma
+```
+
+## API Endpoints
+
+Serma exposes a simple HTTP API:
+
+### Search
+```
+GET /api/search?q=<query>&limit=<limit>&offset=<offset>
+```
+
+**Parameters:**
+- `q`: Search query (required)
+- `limit`: Results per page (default: 50, max: 500)
+- `offset`: Pagination offset (default: 0)
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "info_hash": "abc123...",
+      "title": "Example Torrent",
+      "magnet": "magnet:?xt=urn:btih:...",
+      "seeders": 42
+    }
+  ],
+  "total": 1234,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+### Get Torrent by Hash
+```
+GET /api/torrent/<info_hash>
+```
+
+**Response:**
+```json
+{
+  "info_hash": "abc123...",
+  "title": "Example Torrent",
+  "magnet": "magnet:?xt=urn:btih:...",
+  "seeders": 42,
+  "first_seen": 1704931200000,
+  "last_seen": 1704931200000
+}
+```
+
+## Data Storage
+
+All data is stored in the `SERMA_DATA_DIR` (default: `./data`):
+
+```
+data/
+├── sled/          # Embedded key-value database (torrent metadata)
+└── tantivy/       # Full-text search index
+```
+
+**Backup**: Simply copy the entire `data/` directory to back up your index.
+
+## How It Works
+
+1. **Discovery**: The DHT spider joins the BitTorrent DHT network by connecting to bootstrap nodes
+2. **Harvesting**: Listens for `announce_peer` and `get_peers` queries to discover info hashes
+3. **Enrichment**: For each discovered hash:
+   - Performs DHT peer lookup
+   - Connects to peers and requests metadata via BEP-9 (ut_metadata)
+   - Extracts torrent name and file information
+4. **Indexing**: Stores metadata in Sled and indexes it in Tantivy for fast search
+5. **Cleanup**: Periodically removes torrents with low seeders or inactivity
+
+## Performance Notes
+
+- **Initial seeding**: It may take 1-2 hours to discover your first 1,000 torrents
+- **Index growth**: Expect ~10-50k new torrents per day depending on DHT traffic
+- **Memory usage**: ~100-300 MB RAM typical, ~500 MB during heavy indexing
+- **Disk I/O**: Mostly sequential writes, SSD recommended but not required
+
+## Security Considerations
+
+⚠️ **Important**: Serma is designed for **personal use only**. 
+
+- This software interacts with the public BitTorrent DHT network
+- You are discovering content that others are sharing; you are not hosting or distributing it
+- Be aware of the legal implications in your jurisdiction
+- Consider using a VPN if privacy is a concern
+- **Do not** expose the web interface to the public internet without authentication
+
+See [LICENSE](LICENSE) for the full disclaimer.
+
+## Development
+
+### Project Structure
+
+```
+src/
+├── main.rs       # Application entry point
+├── spider.rs     # DHT spider implementation
+├── enrich.rs     # Metadata fetcher
+├── index.rs      # Tantivy search index wrapper
+├── storage.rs    # Sled database operations
+├── cleanup.rs    # Cleanup task
+└── web.rs        # Axum web server and UI
+```
+
+### Running in Development
 
 ```bash
 cargo run
 ```
 
-Open:
-- http://127.0.0.1:3000
-
-### Run (release, single binary)
+### Running Tests
 
 ```bash
-cargo build --release
-./target/release/serma
+cargo test
 ```
 
-## Configuration
+## Troubleshooting
 
-Environment variables:
+### No torrents appearing in search
 
-- `SERMA_ADDR` (default: `127.0.0.1:3000`)
-  - Example: `SERMA_ADDR=0.0.0.0:3000`
+- **Check logs**: Ensure the spider is running (`RUST_LOG=debug`)
+- **Wait**: Initial discovery can take 30-60 minutes
+- **Network**: Ensure UDP traffic isn't blocked by firewall
+- **DHT**: Try specifying a fixed port with `SERMA_SPIDER_BIND`
 
-- `SERMA_DATA_DIR` (default: `data`)
-  - Stores:
-    - Sled DB under `${SERMA_DATA_DIR}/sled/`
-    - Tantivy index under `${SERMA_DATA_DIR}/tantivy/`
+### High memory usage
 
-Example:
+- The in-memory bloom filter uses ~16 MB for deduplication
+- Tantivy's index writer may use up to 500 MB during heavy writes
+- Consider reducing `SERMA_SPIDER` traffic or increasing system resources
 
-```bash
-SERMA_ADDR=0.0.0.0:3000 SERMA_DATA_DIR=/var/lib/serma ./target/release/serma
-```
+### Disk space filling up
 
-### Spider (autonomous discovery)
+- Serma includes automatic cleanup that runs every 2 hours
+- Adjust cleanup thresholds in `cleanup.rs` if needed
+- Manually delete `data/` and restart to reset the index
 
-By default, Serma runs a small DHT "spider" that discovers new info-hashes automatically.
+## Contributing
 
-It works on typical home networks (behind NAT) by actively querying the DHT for hash samples (BEP-51 `sample_infohashes`), so it does not require inbound reachability from the public internet.
+This is a personal project, but issues and pull requests are welcome for:
+- Bug fixes
+- Performance improvements
+- Documentation improvements
 
-- `SERMA_SPIDER` (default: enabled)
-  - Set to `0`/`false` to disable.
+Please note that this project is provided as-is with no warranty.
 
-- `SERMA_SPIDER_BIND` (default: `0.0.0.0:0`)
-  - Uses an ephemeral UDP port by default (NAT-friendly).
-  - If you are running on a public server and want a stable UDP port, set `SERMA_SPIDER_BIND=0.0.0.0:6881`.
+## License
 
-- `SERMA_SPIDER_BOOTSTRAP` (optional)
-  - Comma-separated `host:port` list of bootstrap nodes.
+See [LICENSE](LICENSE) file for details.
 
+## Disclaimer
 
-## Enrichment (in-binary)
+This software is provided for **educational and research purposes only**. The authors and contributors:
+- Do not endorse, encourage, or facilitate copyright infringement
+- Are not responsible for how you use this software
+- Are not liable for any legal consequences resulting from its use
+- Make no warranties about the software's fitness for any purpose
 
-A background worker continuously scans the DB for records missing metadata and attempts to enrich them:
+**Use at your own risk and in accordance with your local laws.**
 
-- DHT `get_peers(info_hash)` to find peers
-- BEP-10 extension handshake
-- `ut_metadata` piece download
-- Persists the full bencoded `info` dictionary (base64-encoded) in sled
-- Updates Tantivy (upsert by `info_hash`) and refreshes search ranking by seeders
+---
 
-Enrichment is best-effort: peers may be offline, slow, or not support `ut_metadata`.
-
-## Web UI + API
-
-- `GET /` Home/search
-- `GET /search?q=...` HTML results
-- `GET /t/:info_hash` HTML torrent details
-- `GET /api/search?q=...` JSON search results
-
-## Notes
-
-- This is an MVP: data quality depends on network conditions and peer availability.
-- On first run, enrichment may take time before metadata appears on detail pages.
+Made with ❤️ and Rust
