@@ -414,6 +414,46 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Resul
     Ok(())
 }
 
+pub async fn serve_dual_loopback(state: AppState, port: u16) -> anyhow::Result<()> {
+    let app = Router::new()
+        .route("/", get(home))
+        .route("/search", get(search_html))
+        .route("/search/", get(search_html))
+        .route("/api/search", get(search_api))
+        .route("/api/search/", get(search_api))
+        .route("/t/:info_hash", get(torrent_page))
+        .with_state(state);
+
+    let addr_v4: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+    tracing::info!(%addr_v4, "listening");
+    let listener_v4 = tokio::net::TcpListener::bind(addr_v4).await?;
+    let server_v4 = axum::serve(listener_v4, app.clone());
+
+    let addr_v6: std::net::SocketAddr = format!("[::1]:{}", port).parse()?;
+    let listener_v6 = match tokio::net::TcpListener::bind(addr_v6).await {
+        Ok(l) => {
+            tracing::info!(%addr_v6, "listening");
+            Some(l)
+        }
+        Err(err) => {
+            tracing::debug!(%err, %addr_v6, "ipv6 bind failed; continuing with ipv4 only");
+            None
+        }
+    };
+
+    if let Some(listener_v6) = listener_v6 {
+        let server_v6 = axum::serve(listener_v6, app);
+        tokio::select! {
+            r = server_v4 => r?,
+            r = server_v6 => r?,
+        }
+    } else {
+        server_v4.await?;
+    }
+
+    Ok(())
+}
+
 async fn home() -> impl IntoResponse {
     page(
         "Home",

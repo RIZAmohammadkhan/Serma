@@ -55,9 +55,12 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = std::env::var("SERMA_ADDR")
         .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "127.0.0.1:3000".to_string());
-    let addr = std::net::SocketAddr::from_str(&addr).context("parse SERMA_ADDR")?;
+        .filter(|s| !s.trim().is_empty());
 
-    web::serve(state, addr).await
+    if let Some(addr) = addr {
+        let addr = std::net::SocketAddr::from_str(&addr).context("parse SERMA_ADDR")?;
+        web::serve(state, addr).await
+    } else {
+        web::serve_dual_loopback(state, 3000).await
+    }
 }

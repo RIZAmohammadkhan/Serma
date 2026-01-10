@@ -1,6 +1,6 @@
-use crate::{AppState, storage};
+use crate::{storage, AppState};
 use std::collections::{HashSet, VecDeque};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::time::{Duration, interval};
@@ -50,10 +50,12 @@ pub async fn run(state: AppState) {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_BIND.to_string());
 
-    let socket = match UdpSocket::bind(&bind).await {
+    // Use separate IPv4 + (optional) IPv6 UDP sockets so we can talk to both
+    // families regardless of OS IPv6 dual-stack settings.
+    let primary = match UdpSocket::bind(&bind).await {
         Ok(s) => s,
         Err(err) => {
-            tracing::warn!(%err, bind = %bind, "spider: failed to bind; trying ephemeral port");
+            tracing::warn!(%err, bind = %bind, "spider: failed to bind; trying ephemeral v4");
             match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
                 Err(err) => {
@@ -64,7 +66,7 @@ pub async fn run(state: AppState) {
         }
     };
 
-    let local_addr = match socket.local_addr() {
+    let primary_addr = match primary.local_addr() {
         Ok(a) => a,
         Err(err) => {
             tracing::warn!(%err, "spider: failed to get local addr");
@@ -72,10 +74,40 @@ pub async fn run(state: AppState) {
         }
     };
 
+    let (socket_v4, socket_v6): (Option<UdpSocket>, Option<UdpSocket>) = if primary_addr.is_ipv4()
+    {
+        let socket_v6 = match UdpSocket::bind("[::]:0").await {
+            Ok(s) => Some(s),
+            Err(err) => {
+                tracing::debug!(%err, "spider: ipv6 udp bind failed; continuing with ipv4 only");
+                None
+            }
+        };
+        (Some(primary), socket_v6)
+    } else {
+        let socket_v4 = match UdpSocket::bind("0.0.0.0:0").await {
+            Ok(s) => Some(s),
+            Err(err) => {
+                tracing::debug!(%err, "spider: ipv4 udp bind failed; continuing with ipv6 only");
+                None
+            }
+        };
+        (socket_v4, Some(primary))
+    };
+
     // DHT node id: 20 random-ish bytes. We reuse rbit’s peer-id generator (also 20 bytes).
     let node_id = *rbit::peer::PeerId::generate().as_bytes();
 
-    tracing::info!(bind = %local_addr, "spider: listening");
+    if let Some(sock) = socket_v4.as_ref() {
+        if let Ok(a) = sock.local_addr() {
+            tracing::info!(bind=%a, "spider: listening (ipv4)");
+        }
+    }
+    if let Some(sock) = socket_v6.as_ref() {
+        if let Ok(a) = sock.local_addr() {
+            tracing::info!(bind=%a, "spider: listening (ipv6)");
+        }
+    }
 
     let mut known_nodes: VecDeque<SocketAddr> = VecDeque::new();
     let mut known_set: HashSet<SocketAddr> = HashSet::new();
@@ -86,24 +118,25 @@ pub async fn run(state: AppState) {
     for addr in resolve_bootstrap().await {
         push_node(addr, &mut known_nodes, &mut known_set);
     }
-    bootstrap_tick(&socket, &node_id, &mut known_nodes).await;
+    bootstrap_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
 
     // Actively sample info-hashes from the network (BEP-51) so we still discover
     // content even when we're behind NAT and not receiving unsolicited queries.
-    sample_tick(&socket, &node_id, &mut known_nodes).await;
+    sample_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
 
     let mut boot_int = interval(Duration::from_secs(15));
     let mut gc_int = interval(Duration::from_secs(30));
     let mut sample_int = interval(SAMPLE_EVERY);
 
-    let mut buf = vec![0u8; 4096];
+    let mut buf4 = vec![0u8; 4096];
+    let mut buf6 = vec![0u8; 4096];
     loop {
         tokio::select! {
             _ = boot_int.tick() => {
-                bootstrap_tick(&socket, &node_id, &mut known_nodes).await;
+                bootstrap_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
             }
             _ = sample_int.tick() => {
-                sample_tick(&socket, &node_id, &mut known_nodes).await;
+                sample_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
             }
             _ = gc_int.tick() => {
                 // Keep the rolling Bloom filter fresh.
@@ -118,18 +151,24 @@ pub async fn run(state: AppState) {
                     }
                 }
             }
-            recv = socket.recv_from(&mut buf) => {
-                let Ok((n, from)) = recv else {
+            recv = recv_from_any(socket_v4.as_ref(), socket_v6.as_ref(), &mut buf4, &mut buf6) => {
+                let Some((n, from, fam)) = recv else {
                     continue;
                 };
                 if n == 0 {
                     continue;
                 }
 
-                if let Some(msg) = KrpcMessage::decode(&buf[..n]) {
+                let raw = if fam == 4 { &buf4[..n] } else { &buf6[..n] };
+                if let Some(msg) = KrpcMessage::decode(raw) {
                     // Learn nodes from responses.
                     if let Some(nodes) = msg.compact_nodes() {
                         for addr in parse_compact_nodes(nodes) {
+                            push_node(addr, &mut known_nodes, &mut known_set);
+                        }
+                    }
+                    if let Some(nodes6) = msg.compact_nodes_v6() {
+                        for addr in parse_compact_nodes_v6(nodes6) {
                             push_node(addr, &mut known_nodes, &mut known_set);
                         }
                     }
@@ -167,7 +206,8 @@ pub async fn run(state: AppState) {
                     // Respond to queries so we remain a "good" node.
                     if msg.is_query() {
                         if let Some(resp) = msg.make_minimal_response(&node_id) {
-                            let _ = socket.send_to(&resp, from).await;
+                            send_to_family(socket_v4.as_ref(), socket_v6.as_ref(), &resp, from)
+                                .await;
                         }
                     }
 
@@ -328,17 +368,8 @@ fn push_node(addr: SocketAddr, q: &mut VecDeque<SocketAddr>, set: &mut HashSet<S
     if addr.port() == 0 {
         return;
     }
-    // Avoid obviously-useless addresses.
-    match addr.ip() {
-        IpAddr::V4(v4) => {
-            if v4.is_private() || v4.is_loopback() || v4.is_unspecified() {
-                return;
-            }
-        }
-        IpAddr::V6(_) => {
-            // Keep it simple for MVP; ignore v6.
-            return;
-        }
+    if !is_publicly_routable_ip(addr.ip()) {
+        return;
     }
 
     if set.insert(addr) {
@@ -347,6 +378,48 @@ fn push_node(addr: SocketAddr, q: &mut VecDeque<SocketAddr>, set: &mut HashSet<S
             if let Some(old) = q.pop_front() {
                 set.remove(&old);
             }
+        }
+    }
+}
+
+fn is_publicly_routable_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_private() || v4.is_loopback() || v4.is_unspecified() {
+                return false;
+            }
+            if v4.is_link_local() || v4.is_multicast() {
+                return false;
+            }
+
+            // Exclude documentation / benchmark ranges.
+            let o = v4.octets();
+            if (o[0] == 192 && o[1] == 0 && o[2] == 2)
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100)
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113)
+                || (o[0] == 198 && o[1] == 18)
+                || (o[0] == 198 && o[1] == 19)
+            {
+                return false;
+            }
+
+            true
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            if v6.is_unique_local() || v6.is_unicast_link_local() {
+                return false;
+            }
+
+            // 2001:db8::/32 documentation prefix.
+            let seg = v6.segments();
+            if seg[0] == 0x2001 && seg[1] == 0x0db8 {
+                return false;
+            }
+
+            true
         }
     }
 }
@@ -379,7 +452,12 @@ async fn resolve_bootstrap() -> Vec<SocketAddr> {
     out
 }
 
-async fn bootstrap_tick(socket: &UdpSocket, node_id: &[u8; 20], known: &mut VecDeque<SocketAddr>) {
+async fn bootstrap_tick(
+    socket_v4: Option<&UdpSocket>,
+    socket_v6: Option<&UdpSocket>,
+    node_id: &[u8; 20],
+    known: &mut VecDeque<SocketAddr>,
+) {
     // Probe a handful of known nodes each tick.
     for _ in 0..16 {
         let Some(addr) = known.pop_front() else {
@@ -390,7 +468,7 @@ async fn bootstrap_tick(socket: &UdpSocket, node_id: &[u8; 20], known: &mut VecD
         let target = *rbit::peer::PeerId::generate().as_bytes();
         let tx = next_txid();
         let msg = make_find_node(tx, node_id, &target);
-        let _ = socket.send_to(&msg, addr).await;
+        send_to_family(socket_v4, socket_v6, &msg, addr).await;
     }
 }
 
@@ -516,6 +594,36 @@ fn parse_compact_nodes(nodes: &[u8]) -> Vec<SocketAddr> {
     out
 }
 
+fn parse_compact_nodes_v6(nodes: &[u8]) -> Vec<SocketAddr> {
+    // nodes6: 38 bytes per node: 20-byte node id + 16-byte IPv6 + 2-byte port.
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 38 <= nodes.len() {
+        let ip = Ipv6Addr::from([
+            nodes[i + 20],
+            nodes[i + 21],
+            nodes[i + 22],
+            nodes[i + 23],
+            nodes[i + 24],
+            nodes[i + 25],
+            nodes[i + 26],
+            nodes[i + 27],
+            nodes[i + 28],
+            nodes[i + 29],
+            nodes[i + 30],
+            nodes[i + 31],
+            nodes[i + 32],
+            nodes[i + 33],
+            nodes[i + 34],
+            nodes[i + 35],
+        ]);
+        let port = u16::from_be_bytes([nodes[i + 36], nodes[i + 37]]);
+        out.push(SocketAddr::new(IpAddr::V6(ip), port));
+        i += 38;
+    }
+    out
+}
+
 #[derive(Debug)]
 struct KrpcMessage<'a> {
     raw: &'a [u8],
@@ -542,6 +650,12 @@ impl<'a> KrpcMessage<'a> {
         // Look for r:nodes in responses.
         let r = benc_get_dict(self.raw, b"r")?;
         benc_get_bytes(r, b"nodes")
+    }
+
+    fn compact_nodes_v6(&self) -> Option<&'a [u8]> {
+        // Look for r:nodes6 in responses.
+        let r = benc_get_dict(self.raw, b"r")?;
+        benc_get_bytes(r, b"nodes6")
     }
 
     fn samples_from_response(&self) -> Option<&'a [u8]> {
@@ -579,7 +693,12 @@ impl<'a> KrpcMessage<'a> {
     }
 }
 
-async fn sample_tick(socket: &UdpSocket, node_id: &[u8; 20], known: &mut VecDeque<SocketAddr>) {
+async fn sample_tick(
+    socket_v4: Option<&UdpSocket>,
+    socket_v6: Option<&UdpSocket>,
+    node_id: &[u8; 20],
+    known: &mut VecDeque<SocketAddr>,
+) {
     // Query a handful of known nodes for hash samples (BEP-51).
     for _ in 0..SAMPLE_PER_TICK {
         let Some(addr) = known.pop_front() else {
@@ -590,7 +709,51 @@ async fn sample_tick(socket: &UdpSocket, node_id: &[u8; 20], known: &mut VecDequ
         let target = *rbit::peer::PeerId::generate().as_bytes();
         let tx = next_txid();
         let msg = make_sample_infohashes(tx, node_id, &target);
-        let _ = socket.send_to(&msg, addr).await;
+        send_to_family(socket_v4, socket_v6, &msg, addr).await;
+    }
+}
+
+async fn send_to_family(
+    socket_v4: Option<&UdpSocket>,
+    socket_v6: Option<&UdpSocket>,
+    msg: &[u8],
+    addr: SocketAddr,
+) {
+    match addr.ip() {
+        IpAddr::V4(_) => {
+            if let Some(sock) = socket_v4 {
+                let _ = sock.send_to(msg, addr).await;
+            }
+        }
+        IpAddr::V6(_) => {
+            if let Some(sock) = socket_v6 {
+                let _ = sock.send_to(msg, addr).await;
+            }
+        }
+    }
+}
+
+async fn recv_from_any(
+    socket_v4: Option<&UdpSocket>,
+    socket_v6: Option<&UdpSocket>,
+    buf4: &mut [u8],
+    buf6: &mut [u8],
+) -> Option<(usize, SocketAddr, u8)> {
+    tokio::select! {
+        r = async {
+            if let Some(sock) = socket_v4 {
+                sock.recv_from(buf4).await
+            } else {
+                std::future::pending::<std::io::Result<(usize, SocketAddr)>>().await
+            }
+        } => r.ok().map(|(n, from)| (n, from, 4u8)),
+        r = async {
+            if let Some(sock) = socket_v6 {
+                sock.recv_from(buf6).await
+            } else {
+                std::future::pending::<std::io::Result<(usize, SocketAddr)>>().await
+            }
+        } => r.ok().map(|(n, from)| (n, from, 6u8)),
     }
 }
 
