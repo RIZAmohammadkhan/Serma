@@ -50,6 +50,11 @@ pub async fn run_file_or_stdin_ingest(state: AppState) {
                     tracing::warn!(%err, "failed to index record");
                 }
 
+                // Make small ingests visible without waiting for 100 documents.
+                if let Err(err) = state.index.maybe_commit() {
+                    tracing::debug!(%err, "tantivy commit skipped/failed");
+                }
+
                 tracing::info!(hash = %record.info_hash_hex, "ingested");
             }
             Err(err) => tracing::warn!(%err, "failed to upsert in sled"),

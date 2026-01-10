@@ -39,20 +39,79 @@ pub struct SearchHit {
 
 impl SearchIndex {
     pub fn open_or_create(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let mut schema_builder = Schema::builder();
-        let info_hash = schema_builder.add_text_field("info_hash", STRING | STORED);
-        let title = schema_builder.add_text_field("title", TEXT | STORED);
-        let magnet = schema_builder.add_text_field("magnet", STORED);
-        let seeders = schema_builder.add_i64_field("seeders", FAST | STORED);
-        let schema = schema_builder.build();
+        let mut expected_schema_builder = Schema::builder();
+        expected_schema_builder.add_text_field("info_hash", STRING | STORED);
+        expected_schema_builder.add_text_field("title", TEXT | STORED);
+        expected_schema_builder.add_text_field("magnet", STORED);
+        expected_schema_builder.add_i64_field("seeders", FAST | STORED);
+        let expected_schema = expected_schema_builder.build();
 
         std::fs::create_dir_all(path.as_ref()).context("create index directory")?;
-        let dir = tantivy::directory::MmapDirectory::open(path.as_ref())
+        let mut dir = tantivy::directory::MmapDirectory::open(path.as_ref())
             .context("open index directory")?;
 
-        let index = tantivy::Index::open(dir.clone())
-            .or_else(|_| tantivy::Index::create(dir, schema.clone(), IndexSettings::default()))
-            .context("open or create index")?;
+        // IMPORTANT: When opening an existing Tantivy index, always use the schema
+        // stored in that index for field IDs. Mixing field IDs from a newly built
+        // schema with an on-disk schema can panic inside Tantivy.
+        let (index, schema, info_hash, title, magnet, seeders) = match tantivy::Index::open(dir.clone()) {
+            Ok(index) => {
+                let schema = index.schema();
+                let info_hash = schema.get_field("info_hash").ok();
+                let title = schema.get_field("title").ok();
+                let magnet = schema.get_field("magnet").ok();
+                let seeders = schema.get_field("seeders").ok();
+
+                if let (Some(info_hash), Some(title), Some(magnet), Some(seeders)) =
+                    (info_hash, title, magnet, seeders)
+                {
+                    (index, schema.clone(), info_hash, title, magnet, seeders)
+                } else {
+                    tracing::warn!(
+                        path = %path.as_ref().display(),
+                        "tantivy schema mismatch; recreating index directory"
+                    );
+                    drop(index);
+
+                    // Tantivy does not support in-place schema migrations.
+                    // Recreate the index directory so the schema matches the binary.
+                    std::fs::remove_dir_all(path.as_ref()).ok();
+                    std::fs::create_dir_all(path.as_ref())
+                        .context("recreate index directory")?;
+                    dir = tantivy::directory::MmapDirectory::open(path.as_ref())
+                        .context("reopen index directory")?;
+                    let index = tantivy::Index::create(dir, expected_schema.clone(), IndexSettings::default())
+                        .context("create index")?;
+                    let schema = index.schema();
+                    let info_hash = schema
+                        .get_field("info_hash")
+                        .context("missing info_hash field")?;
+                    let title = schema.get_field("title").context("missing title field")?;
+                    let magnet = schema
+                        .get_field("magnet")
+                        .context("missing magnet field")?;
+                    let seeders = schema
+                        .get_field("seeders")
+                        .context("missing seeders field")?;
+                    (index, schema.clone(), info_hash, title, magnet, seeders)
+                }
+            }
+            Err(_) => {
+                let index = tantivy::Index::create(dir, expected_schema.clone(), IndexSettings::default())
+                    .context("create index")?;
+                let schema = index.schema();
+                let info_hash = schema
+                    .get_field("info_hash")
+                    .context("missing info_hash field")?;
+                let title = schema.get_field("title").context("missing title field")?;
+                let magnet = schema
+                    .get_field("magnet")
+                    .context("missing magnet field")?;
+                let seeders = schema
+                    .get_field("seeders")
+                    .context("missing seeders field")?;
+                (index, schema.clone(), info_hash, title, magnet, seeders)
+            }
+        };
 
         let reader = index
             .reader_builder()
@@ -73,7 +132,9 @@ impl SearchIndex {
                 seeders,
                 writer: Mutex::new(writer),
                 pending_ops: AtomicUsize::new(0),
-                last_commit_at: Mutex::new(Instant::now()),
+                // Ensure the very first maybe_commit() can commit immediately.
+                // Otherwise, a single ingested hash can remain uncommitted and therefore unsearchable.
+                last_commit_at: Mutex::new(Instant::now() - Duration::from_secs(3600)),
             }),
         })
     }
@@ -149,7 +210,10 @@ impl SearchIndex {
         self.inner.reader.reload().ok();
         let searcher = self.inner.reader.searcher();
 
-        let query_parser = QueryParser::for_index(&self.inner.index, vec![self.inner.title]);
+        let query_parser = QueryParser::for_index(
+            &self.inner.index,
+            vec![self.inner.title, self.inner.info_hash],
+        );
         let query = query_parser.parse_query(q)?;
 
         let top_docs = searcher.search(

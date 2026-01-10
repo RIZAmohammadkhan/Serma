@@ -19,11 +19,11 @@ fn page(title: &str, body: String) -> Html<String> {
 
     Html(format!(
         r#"<!doctype html>
-<html lang=\"en\">
+<html lang="en">
     <head>
-        <meta charset=\"utf-8\" />
-        <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-        <meta name=\"color-scheme\" content=\"light dark\" />
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light dark" />
         <title>{}</title>
         <style>
             :root {{
@@ -105,14 +105,14 @@ fn page(title: &str, body: String) -> Html<String> {
         </style>
     </head>
     <body>
-        <div class=\"wrap\">
+        <div class="wrap">
             <header>
-                <div class=\"brand\">
-                    <h1><a href=\"/\">{}</a></h1>
+                <div class="brand">
+                    <h1><a href="/">{}</a></h1>
                     <p>{}</p>
                 </div>
                 <nav>
-                    <a class=\"btn\" href=\"/\">Home</a>
+                    <a class="btn" href="/">Home</a>
                 </nav>
             </header>
             {}
@@ -147,15 +147,15 @@ async fn home() -> impl IntoResponse {
     page(
         "Search",
         format!(
-            r#"<main class=\"card\">
-    <div class=\"row\">
+            r#"<main class="card">
+    <div class="row">
         <div>
-            <p class=\"meta\">Search torrents by name. Results are ranked by seeders.</p>
+            <p class="meta">Search torrents by name. Results are ranked by seeders.</p>
         </div>
     </div>
-    <form action=\"/search\" method=\"get\" class=\"searchbar\">
-        <input name=\"q\" placeholder=\"Search titles…\" autocomplete=\"off\" />
-        <button class=\"btn\" type=\"submit\">Search</button>
+    <form action="/search" method="get" class="searchbar">
+        <input name="q" placeholder="Search titles…" autocomplete="off" />
+        <button class="btn" type="submit">Search</button>
     </form>
 </main>"#
         ),
@@ -202,14 +202,14 @@ async fn search_html(
         };
 
         items.push_str(&format!(
-            r#"<li class=\"card\">
-  <div class=\"row\">
+                        r#"<li class="card">
+    <div class="row">
     <div>
-      <div class=\"title\">{}</div>
-      <div class=\"meta\">Info hash: <code>{}</code></div>
+            <div class="title">{}</div>
+            <div class="meta">Info hash: <code>{}</code></div>
     </div>
-    <div class=\"actions\">
-      <span class=\"pill\">Seeders: {}</span>
+        <div class="actions">
+            <span class="pill">Seeders: {}</span>
       {}{}
     </div>
   </div>
@@ -235,10 +235,10 @@ async fn search_html(
     page(
         &format!("Search: {}", q.trim()),
         format!(
-            r#"<main class=\"card\">
-  <form action=\"/search\" method=\"get\" class=\"searchbar\">
-    <input name=\"q\" value=\"{}\" placeholder=\"Search titles…\" />
-    <button class=\"btn\" type=\"submit\">Search</button>
+                        r#"<main class="card">
+    <form action="/search" method="get" class="searchbar">
+        <input name="q" value="{}" placeholder="Search titles…" />
+        <button class="btn" type="submit">Search</button>
   </form>
   {}
 </main>"#,
@@ -295,15 +295,15 @@ async fn torrent_page(
     page(
         &title,
         format!(
-            r#"<main class=\"card\">
-  <div class=\"row\">
+                        r#"<main class="card">
+    <div class="row">
     <div>
-      <div class=\"title\">{}</div>
-      <div class=\"meta\">Info hash: <code>{}</code></div>
+            <div class="title">{}</div>
+            <div class="meta">Info hash: <code>{}</code></div>
     </div>
-    <div class=\"actions\">
-      <span class=\"pill\">Seeders: {}</span>
-      <span class=\"pill\">Metadata: {}</span>
+        <div class="actions">
+            <span class="pill">Seeders: {}</span>
+            <span class="pill">Metadata: {}</span>
       {}
     </div>
   </div>
