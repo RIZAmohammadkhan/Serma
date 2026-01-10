@@ -4,8 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const TORRENT_RECORD_MAGIC: [u8; 4] = *b"SRM1";
 const MISSING_INFO_TREE: &[u8] = b"idx_missing_info";
+const LAST_SEEN_TREE: &[u8] = b"idx_last_seen";
+const LOW_SEED_TREE: &[u8] = b"idx_low_seed";
 const META_TREE: &[u8] = b"meta";
 const META_MISSING_INFO_BUILT_V1: &[u8] = b"missing_info_index_built_v1";
+const META_CLEANUP_INDEXES_BUILT_V1: &[u8] = b"cleanup_indexes_built_v1";
 
 fn bincode_opts() -> impl bincode::Options {
     // Varint encoding reduces disk usage for small integers.
@@ -79,6 +82,30 @@ fn key_for_hash(info_hash_hex: &str) -> Vec<u8> {
     key
 }
 
+fn u64_be(v: u64) -> [u8; 8] {
+    v.to_be_bytes()
+}
+
+fn ts_key(ts_unix_ms: i64, info_hash_hex: &str) -> Vec<u8> {
+    // Sort by timestamp ascending, then by hash.
+    let mut out = Vec::with_capacity(8 + info_hash_hex.len());
+    let ts_u = (ts_unix_ms.max(0)) as u64;
+    out.extend_from_slice(&u64_be(ts_u));
+    out.extend_from_slice(info_hash_hex.as_bytes());
+    out
+}
+
+fn parse_ts_key(key: &[u8]) -> Option<(i64, String)> {
+    if key.len() < 8 {
+        return None;
+    }
+    let mut ts_bytes = [0u8; 8];
+    ts_bytes.copy_from_slice(&key[..8]);
+    let ts = u64::from_be_bytes(ts_bytes) as i64;
+    let hash = std::str::from_utf8(&key[8..]).ok()?.to_string();
+    Some((ts, hash))
+}
+
 fn has_info(record: &TorrentRecord) -> bool {
     record
         .info_bencode_base64
@@ -88,6 +115,14 @@ fn has_info(record: &TorrentRecord) -> bool {
 
 fn missing_info_tree(db: &sled::Db) -> sled::Result<sled::Tree> {
     db.open_tree(MISSING_INFO_TREE)
+}
+
+fn last_seen_tree(db: &sled::Db) -> sled::Result<sled::Tree> {
+    db.open_tree(LAST_SEEN_TREE)
+}
+
+fn low_seed_tree(db: &sled::Db) -> sled::Result<sled::Tree> {
+    db.open_tree(LOW_SEED_TREE)
 }
 
 fn meta_tree(db: &sled::Db) -> sled::Result<sled::Tree> {
@@ -102,6 +137,93 @@ fn sync_missing_info_index(db: &sled::Db, record: &TorrentRecord) -> anyhow::Res
     } else {
         // Value is unused; presence of key indicates "needs enrich".
         tree.insert(key, &[])?;
+    }
+    Ok(())
+}
+
+fn sync_last_seen_index(db: &sled::Db, before: Option<&TorrentRecord>, after: &TorrentRecord) -> anyhow::Result<()> {
+    let tree = last_seen_tree(db)?;
+
+    if let Some(before) = before {
+        if before.last_seen_unix_ms != after.last_seen_unix_ms {
+            let _ = tree.remove(ts_key(before.last_seen_unix_ms, &before.info_hash_hex))?;
+        }
+    }
+
+    tree.insert(ts_key(after.last_seen_unix_ms, &after.info_hash_hex), &[])?;
+    Ok(())
+}
+
+fn sync_low_seed_index(db: &sled::Db, before: Option<&TorrentRecord>, after: &TorrentRecord) -> anyhow::Result<()> {
+    let tree = low_seed_tree(db)?;
+    let key = ts_key(after.first_seen_unix_ms, &after.info_hash_hex);
+
+    let before_low = before.is_some_and(|r| r.seeders < 2);
+    let after_low = after.seeders < 2;
+
+    match (before_low, after_low) {
+        (true, false) => {
+            let _ = tree.remove(key)?;
+        }
+        (false, true) => {
+            tree.insert(key, &[])?;
+        }
+        (true, true) => {
+            // First-seen is immutable; no-op.
+        }
+        (false, false) => {}
+    }
+    Ok(())
+}
+
+pub fn cleanup_last_seen_tree(db: &sled::Db) -> anyhow::Result<sled::Tree> {
+    Ok(last_seen_tree(db)?)
+}
+
+pub fn cleanup_low_seed_tree(db: &sled::Db) -> anyhow::Result<sled::Tree> {
+    Ok(low_seed_tree(db)?)
+}
+
+pub fn end_key_for_ts(ts_unix_ms: i64) -> Vec<u8> {
+    // Upper bound (inclusive) for all keys with timestamp <= ts_unix_ms.
+    let mut out = Vec::with_capacity(8 + 1);
+    let ts_u = (ts_unix_ms.max(0)) as u64;
+    out.extend_from_slice(&u64_be(ts_u));
+    out.push(0xFF);
+    out
+}
+
+pub fn parse_cleanup_index_key(key: &[u8]) -> Option<(i64, String)> {
+    parse_ts_key(key)
+}
+
+pub fn fix_last_seen_index_entry(
+    db: &sled::Db,
+    indexed_last_seen_unix_ms: i64,
+    record: &TorrentRecord,
+) -> anyhow::Result<()> {
+    let tree = last_seen_tree(db)?;
+    if indexed_last_seen_unix_ms != record.last_seen_unix_ms {
+        let _ = tree.remove(ts_key(indexed_last_seen_unix_ms, &record.info_hash_hex))?;
+        tree.insert(ts_key(record.last_seen_unix_ms, &record.info_hash_hex), &[])?;
+    }
+    Ok(())
+}
+
+pub fn fix_low_seed_index_entry(
+    db: &sled::Db,
+    indexed_first_seen_unix_ms: i64,
+    record: &TorrentRecord,
+) -> anyhow::Result<()> {
+    let tree = low_seed_tree(db)?;
+    if record.seeders >= 2 {
+        let _ = tree.remove(ts_key(indexed_first_seen_unix_ms, &record.info_hash_hex))?;
+        return Ok(());
+    }
+
+    if indexed_first_seen_unix_ms != record.first_seen_unix_ms {
+        let _ = tree.remove(ts_key(indexed_first_seen_unix_ms, &record.info_hash_hex))?;
+        tree.insert(ts_key(record.first_seen_unix_ms, &record.info_hash_hex), &[])?;
     }
     Ok(())
 }
@@ -136,13 +258,52 @@ pub fn ensure_missing_info_index(db: &sled::Db) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Ensures cleanup indexes exist and are populated.
+///
+/// - `idx_last_seen`: ordered by `last_seen_unix_ms` for TTL pruning / eviction
+/// - `idx_low_seed`: ordered by `first_seen_unix_ms` for pruning low-seed stale entries
+///
+/// This avoids periodic O(n) scans in the cleanup worker.
+pub fn ensure_cleanup_indexes(db: &sled::Db) -> anyhow::Result<()> {
+    let meta = meta_tree(db)?;
+    if meta.get(META_CLEANUP_INDEXES_BUILT_V1)?.is_some() {
+        return Ok(());
+    }
+
+    let last_seen = last_seen_tree(db)?;
+    let low_seed = low_seed_tree(db)?;
+
+    let mut total: usize = 0;
+    let mut low_seed_count: usize = 0;
+    for item in db.scan_prefix(b"torrent:") {
+        let (k, v) = item?;
+        total += 1;
+        let record = decode_torrent_record_maybe_migrate(db, &k, &v)?;
+        last_seen.insert(ts_key(record.last_seen_unix_ms, &record.info_hash_hex), &[])?;
+        if record.seeders < 2 {
+            low_seed.insert(ts_key(record.first_seen_unix_ms, &record.info_hash_hex), &[])?;
+            low_seed_count += 1;
+        }
+    }
+
+    meta.insert(META_CLEANUP_INDEXES_BUILT_V1, b"1")?;
+    tracing::info!(total, low_seed_count, "storage: built cleanup indexes");
+    Ok(())
+}
+
 pub fn upsert_first_seen(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<TorrentRecord> {
     let key = key_for_hash(info_hash_hex);
     let now = now_unix_ms();
 
     let existing = db.get(&key)?;
-    let record = if let Some(bytes) = existing {
-        let mut record: TorrentRecord = decode_torrent_record(&bytes)?.0;
+
+    let before = existing
+        .as_ref()
+        .and_then(|b| decode_torrent_record(b).ok())
+        .map(|(r, _)| r);
+
+    let record = if let Some(bytes) = existing.as_ref() {
+        let mut record: TorrentRecord = decode_torrent_record(bytes)?.0;
         record.last_seen_unix_ms = now;
         record
     } else {
@@ -157,9 +318,11 @@ pub fn upsert_first_seen(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<T
         }
     };
 
+    // Keep indexes consistent.
     db.insert(key, encode_torrent_record(&record)?)?;
-    // Keep missing-info index consistent.
     let _ = sync_missing_info_index(db, &record);
+    let _ = sync_last_seen_index(db, before.as_ref(), &record);
+    let _ = sync_low_seed_index(db, before.as_ref(), &record);
     Ok(record)
 }
 
@@ -222,8 +385,14 @@ pub fn set_metadata(
     }
     record.info_bencode_base64 = Some(info_bencode_base64.to_string());
     let key = key_for_hash(info_hash_hex);
-    db.insert(key, encode_torrent_record(&record)?)?;
+    let before = db
+        .get(&key)?
+        .and_then(|b| decode_torrent_record(&b).ok())
+        .map(|(r, _)| r);
+    db.insert(&key, encode_torrent_record(&record)?)?;
     let _ = sync_missing_info_index(db, &record);
+    let _ = sync_last_seen_index(db, before.as_ref(), &record);
+    let _ = sync_low_seed_index(db, before.as_ref(), &record);
     Ok(record)
 }
 
@@ -235,8 +404,14 @@ pub fn set_seeders(
     let mut record = upsert_first_seen(db, info_hash_hex)?;
     record.seeders = seeders;
     let key = key_for_hash(info_hash_hex);
-    db.insert(key, encode_torrent_record(&record)?)?;
+    let before = db
+        .get(&key)?
+        .and_then(|b| decode_torrent_record(&b).ok())
+        .map(|(r, _)| r);
+    db.insert(&key, encode_torrent_record(&record)?)?;
     let _ = sync_missing_info_index(db, &record);
+    let _ = sync_last_seen_index(db, before.as_ref(), &record);
+    let _ = sync_low_seed_index(db, before.as_ref(), &record);
     Ok(record)
 }
 
@@ -250,8 +425,14 @@ pub fn set_magnet(
         record.magnet = Some(magnet.to_string());
     }
     let key = key_for_hash(info_hash_hex);
-    db.insert(key, encode_torrent_record(&record)?)?;
+    let before = db
+        .get(&key)?
+        .and_then(|b| decode_torrent_record(&b).ok())
+        .map(|(r, _)| r);
+    db.insert(&key, encode_torrent_record(&record)?)?;
     let _ = sync_missing_info_index(db, &record);
+    let _ = sync_last_seen_index(db, before.as_ref(), &record);
+    let _ = sync_low_seed_index(db, before.as_ref(), &record);
     Ok(record)
 }
 
@@ -266,9 +447,23 @@ pub fn get(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<Option<TorrentR
 
 pub fn delete(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<()> {
     let key = key_for_hash(info_hash_hex);
-    let _ = db.remove(key)?;
+    let before = db
+        .get(&key)?
+        .and_then(|b| decode_torrent_record(&b).ok())
+        .map(|(r, _)| r);
+
+    let _ = db.remove(&key)?;
     if let Ok(tree) = missing_info_tree(db) {
         let _ = tree.remove(info_hash_hex.as_bytes());
+    }
+
+    if let Some(before) = before.as_ref() {
+        if let Ok(tree) = last_seen_tree(db) {
+            let _ = tree.remove(ts_key(before.last_seen_unix_ms, &before.info_hash_hex));
+        }
+        if let Ok(tree) = low_seed_tree(db) {
+            let _ = tree.remove(ts_key(before.first_seen_unix_ms, &before.info_hash_hex));
+        }
     }
     Ok(())
 }

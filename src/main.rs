@@ -35,6 +35,7 @@ async fn main() -> anyhow::Result<()> {
     // Build secondary indexes (one-time migration) so background tasks can find work without
     // scanning the full DB each loop.
     crate::storage::ensure_missing_info_index(&db).context("build missing-info index")?;
+    crate::storage::ensure_cleanup_indexes(&db).context("build cleanup indexes")?;
     let index = index::SearchIndex::open_or_create(data_dir.join("tantivy"))
         .context("open/create tantivy index")?;
 
