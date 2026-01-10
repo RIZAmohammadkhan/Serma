@@ -1,6 +1,5 @@
 mod enrich;
 mod index;
-mod ingest;
 mod spider;
 mod storage;
 mod web;
@@ -40,10 +39,6 @@ async fn main() -> anyhow::Result<()> {
         db,
         index,
     };
-
-    // MVP ingestion: reads one info_hash (40 hex chars) per line from a file
-    // or from stdin if no file is provided.
-    tokio::spawn(ingest::run_file_or_stdin_ingest(state.clone()));
 
     // Background enrichment: DHT peer lookup -> ut_metadata info dict fetch -> persist full info -> reindex.
     tokio::spawn(enrich::run(state.clone()));

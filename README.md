@@ -3,7 +3,7 @@
 Single-binary BitTorrent metadata crawler + local search index.
 
 Serma:
-- Ingests torrent info-hashes (40 hex chars)
+- Discovers torrent info-hashes via the DHT (automatic spider)
 - Enriches them in-process via DHT + `ut_metadata` (stores the full bencoded `info` dictionary)
 - Indexes/searches via Tantivy
 - Serves a small HTML UI + JSON API over HTTP
@@ -37,47 +37,29 @@ Environment variables:
   - Stores:
     - Sled DB under `${SERMA_DATA_DIR}/sled/`
     - Tantivy index under `${SERMA_DATA_DIR}/tantivy/`
-    - Optional ingest file `${SERMA_DATA_DIR}/hashes.txt`
 
 Example:
 
 ```bash
 SERMA_ADDR=0.0.0.0:3000 SERMA_DATA_DIR=/var/lib/serma ./target/release/serma
+```
 
 ### Spider (autonomous discovery)
 
-By default, Serma runs a small DHT "spider" that listens for incoming DHT traffic and learns new info-hashes from `announce_peer` and `get_peers` requests.
+By default, Serma runs a small DHT "spider" that discovers new info-hashes automatically.
+
+It works on typical home networks (behind NAT) by actively querying the DHT for hash samples (BEP-51 `sample_infohashes`), so it does not require inbound reachability from the public internet.
 
 - `SERMA_SPIDER` (default: enabled)
   - Set to `0`/`false` to disable.
 
-- `SERMA_SPIDER_BIND` (default: `0.0.0.0:6881`)
-  - On a public server, you usually want a stable UDP port so other DHT nodes can query you.
+- `SERMA_SPIDER_BIND` (default: `0.0.0.0:0`)
+  - Uses an ephemeral UDP port by default (NAT-friendly).
+  - If you are running on a public server and want a stable UDP port, set `SERMA_SPIDER_BIND=0.0.0.0:6881`.
 
 - `SERMA_SPIDER_BOOTSTRAP` (optional)
   - Comma-separated `host:port` list of bootstrap nodes.
-```
 
-## Ingestion
-
-On startup, Serma reads **one info-hash per line** from:
-
-1. `${SERMA_DATA_DIR}/hashes.txt` (if it exists), otherwise
-2. `stdin`
-
-Lines that are not exactly 40 hex characters are skipped.
-
-Examples:
-
-```bash
-# Ingest from stdin
-cat hashes.txt | SERMA_DATA_DIR=data ./target/release/serma
-
-# Or place hashes in the default file location
-mkdir -p data
-cp hashes.txt data/hashes.txt
-./target/release/serma
-```
 
 ## Enrichment (in-binary)
 

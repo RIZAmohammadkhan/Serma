@@ -11,7 +11,9 @@ use tokio::time::{Duration, interval};
 // - Harvests info_hash from announce_peer / get_peers queries
 // - Learns more nodes from responses (“nodes” compact format)
 
-const DEFAULT_BIND: &str = "0.0.0.0:6881";
+// Default to an ephemeral UDP port so this works smoothly on home networks
+// (no need to open/forward a port).
+const DEFAULT_BIND: &str = "0.0.0.0:0";
 const DEFAULT_BOOTSTRAP: &[&str] = &[
     "router.bittorrent.com:6881",
     "dht.transmissionbt.com:6881",
@@ -21,6 +23,10 @@ const DEFAULT_BOOTSTRAP: &[&str] = &[
 const MAX_KNOWN_NODES: usize = 10_000;
 const MAX_SEEN_HASHES: usize = 50_000;
 const SEEN_TTL: Duration = Duration::from_secs(30 * 60);
+
+const SAMPLE_EVERY: Duration = Duration::from_secs(5);
+const SAMPLE_PER_TICK: usize = 12;
+const MAX_SAMPLES_PER_MSG: usize = 256;
 
 pub async fn run(state: AppState) {
     // Allow disabling the spider entirely.
@@ -75,14 +81,22 @@ pub async fn run(state: AppState) {
     }
     bootstrap_tick(&socket, &node_id, &mut known_nodes).await;
 
+    // Actively sample info-hashes from the network (BEP-51) so we still discover
+    // content even when we're behind NAT and not receiving unsolicited queries.
+    sample_tick(&socket, &node_id, &mut known_nodes).await;
+
     let mut boot_int = interval(Duration::from_secs(15));
     let mut gc_int = interval(Duration::from_secs(30));
+    let mut sample_int = interval(SAMPLE_EVERY);
 
     let mut buf = vec![0u8; 4096];
     loop {
         tokio::select! {
             _ = boot_int.tick() => {
                 bootstrap_tick(&socket, &node_id, &mut known_nodes).await;
+            }
+            _ = sample_int.tick() => {
+                sample_tick(&socket, &node_id, &mut known_nodes).await;
             }
             _ = gc_int.tick() => {
                 gc_seen(&mut seen_hashes);
@@ -109,6 +123,22 @@ pub async fn run(state: AppState) {
                     if let Some(nodes) = msg.compact_nodes() {
                         for addr in parse_compact_nodes(nodes) {
                             push_node(addr, &mut known_nodes, &mut known_set);
+                        }
+                    }
+
+                    // Active discovery: harvest info_hash from BEP-51 sample_infohashes responses.
+                    if let Some(samples) = msg.samples_from_response() {
+                        for chunk in samples.chunks_exact(20).take(MAX_SAMPLES_PER_MSG) {
+                            let mut info_hash = [0u8; 20];
+                            info_hash.copy_from_slice(chunk);
+                            if should_accept_hash(&mut seen_hashes, info_hash) {
+                                let info_hex = hex::encode(info_hash);
+                                if let Err(err) = ingest_spidered_hash(&state, &info_hex) {
+                                    tracing::debug!(%err, hash=%info_hex, "spider: ingest failed");
+                                } else {
+                                    tracing::info!(hash=%info_hex, "spider: sampled");
+                                }
+                            }
                         }
                     }
 
@@ -296,6 +326,32 @@ fn make_find_node(tx: [u8; 2], id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {
     out
 }
 
+fn make_sample_infohashes(tx: [u8; 2], id: &[u8; 20], target: &[u8; 20]) -> Vec<u8> {
+    // d1:ad2:id20:<id>6:target20:<target>e1:q17:sample_infohashes1:t2:<tx>1:y1:qe
+    let mut out = Vec::with_capacity(140);
+    out.push(b'd');
+
+    benc_key(&mut out, b"a");
+    out.push(b'd');
+    benc_key(&mut out, b"id");
+    benc_bytes(&mut out, id);
+    benc_key(&mut out, b"target");
+    benc_bytes(&mut out, target);
+    out.push(b'e');
+
+    benc_key(&mut out, b"q");
+    benc_bytes(&mut out, b"sample_infohashes");
+
+    benc_key(&mut out, b"t");
+    benc_bytes(&mut out, &tx);
+
+    benc_key(&mut out, b"y");
+    benc_bytes(&mut out, b"q");
+
+    out.push(b'e');
+    out
+}
+
 fn make_response(tx: &[u8], id: &[u8; 20]) -> Vec<u8> {
     // d1:rd2:id20:<id>e1:t<tx>1:y1:re
     let mut out = Vec::with_capacity(80);
@@ -376,10 +432,22 @@ impl<'a> KrpcMessage<'a> {
         benc_get_bytes(self.raw, b"y").is_some_and(|v| v == b"q")
     }
 
+    fn is_response(&self) -> bool {
+        benc_get_bytes(self.raw, b"y").is_some_and(|v| v == b"r")
+    }
+
     fn compact_nodes(&self) -> Option<&'a [u8]> {
         // Look for r:nodes in responses.
         let r = benc_get_dict(self.raw, b"r")?;
         benc_get_bytes(r, b"nodes")
+    }
+
+    fn samples_from_response(&self) -> Option<&'a [u8]> {
+        if !self.is_response() {
+            return None;
+        }
+        let r = benc_get_dict(self.raw, b"r")?;
+        benc_get_bytes(r, b"samples")
     }
 
     fn info_hash_from_query(&self) -> Option<[u8; 20]> {
@@ -406,6 +474,21 @@ impl<'a> KrpcMessage<'a> {
         }
         let tx = benc_get_bytes(self.raw, b"t")?;
         Some(make_response(tx, node_id))
+    }
+}
+
+async fn sample_tick(socket: &UdpSocket, node_id: &[u8; 20], known: &mut VecDeque<SocketAddr>) {
+    // Query a handful of known nodes for hash samples (BEP-51).
+    for _ in 0..SAMPLE_PER_TICK {
+        let Some(addr) = known.pop_front() else {
+            break;
+        };
+        known.push_back(addr);
+
+        let target = *rbit::peer::PeerId::generate().as_bytes();
+        let tx = next_txid();
+        let msg = make_sample_infohashes(tx, node_id, &target);
+        let _ = socket.send_to(&msg, addr).await;
     }
 }
 
