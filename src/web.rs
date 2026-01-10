@@ -133,7 +133,9 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Resul
     let app = Router::new()
         .route("/", get(home))
         .route("/search", get(search_html))
+        .route("/search/", get(search_html))
         .route("/api/search", get(search_api))
+        .route("/api/search/", get(search_api))
         .route("/t/:info_hash", get(torrent_page))
         .with_state(state);
     tracing::info!(%addr, "listening");

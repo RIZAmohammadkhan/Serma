@@ -1,6 +1,7 @@
 mod enrich;
 mod index;
 mod ingest;
+mod spider;
 mod storage;
 mod web;
 
@@ -46,6 +47,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Background enrichment: DHT peer lookup -> ut_metadata info dict fetch -> persist full info -> reindex.
     tokio::spawn(enrich::run(state.clone()));
+
+    // Autonomous discovery (DHT spider): harvest new hashes from DHT traffic.
+    tokio::spawn(spider::run(state.clone()));
 
     let addr = std::env::var("SERMA_ADDR")
         .ok()

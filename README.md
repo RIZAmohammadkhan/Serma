@@ -43,6 +43,19 @@ Example:
 
 ```bash
 SERMA_ADDR=0.0.0.0:3000 SERMA_DATA_DIR=/var/lib/serma ./target/release/serma
+
+### Spider (autonomous discovery)
+
+By default, Serma runs a small DHT "spider" that listens for incoming DHT traffic and learns new info-hashes from `announce_peer` and `get_peers` requests.
+
+- `SERMA_SPIDER` (default: enabled)
+  - Set to `0`/`false` to disable.
+
+- `SERMA_SPIDER_BIND` (default: `0.0.0.0:6881`)
+  - On a public server, you usually want a stable UDP port so other DHT nodes can query you.
+
+- `SERMA_SPIDER_BOOTSTRAP` (optional)
+  - Comma-separated `host:port` list of bootstrap nodes.
 ```
 
 ## Ingestion

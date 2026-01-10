@@ -100,6 +100,20 @@ pub fn set_seeders(
     Ok(record)
 }
 
+pub fn set_magnet(
+    db: &sled::Db,
+    info_hash_hex: &str,
+    magnet: &str,
+) -> anyhow::Result<TorrentRecord> {
+    let mut record = upsert_first_seen(db, info_hash_hex)?;
+    if !magnet.trim().is_empty() {
+        record.magnet = Some(magnet.to_string());
+    }
+    let key = key_for_hash(info_hash_hex);
+    db.insert(key, serde_json::to_vec(&record)?)?;
+    Ok(record)
+}
+
 pub fn get(db: &sled::Db, info_hash_hex: &str) -> anyhow::Result<Option<TorrentRecord>> {
     let key = key_for_hash(info_hash_hex);
     let Some(bytes) = db.get(key)? else {
