@@ -492,7 +492,7 @@ async fn home() -> impl IntoResponse {
             r##"
             <main class="hero">
                 <h2>The Local Index</h2>
-                <p>Serma continuously discovers hashes, enriches metadata, and cleans unused torrents</p>
+                <p>Serma continuously discovers hashes, enriches metadata, and cleans inactive torrents</p>
                 <form action="/search" method="get" class="hero-search">
                     <div class="search-wrapper">
                         <input type="text" name="q" placeholder="Search by title..." autocomplete="off" autofocus />
@@ -595,8 +595,8 @@ async fn search_html(
     let load_more_html = if has_more {
         let next_limit = (limit.saturating_add(SEARCH_PAGE_SIZE)).min(SEARCH_MAX_LIMIT);
         format!(
-            r##"<div style=\"margin-top: 18px; display:flex; justify-content:center;\">
-                    <a class=\"btn btn-ghost\" href=\"/search?q={}&limit={}\">Load more</a>
+            r##"<div style="margin-top: 18px; display:flex; justify-content:center;">
+                    <a class="btn btn-ghost" href="/search?q={}&limit={}">Load more</a>
                 </div>"##,
             url_encode(&q),
             next_limit
