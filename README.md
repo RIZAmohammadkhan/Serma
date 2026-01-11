@@ -1,5 +1,7 @@
 # Serma
 
+![Logo](logo.png)
+
 **The local index.** A self-hosted BitTorrent DHT spider and search engine.
 
 Serma autonomously discovers torrents from the BitTorrent DHT network, enriches metadata, and provides a clean web interface for searching your personal torrent index.
