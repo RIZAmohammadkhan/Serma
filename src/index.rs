@@ -20,7 +20,6 @@ pub struct SearchIndex {
 struct SearchIndexInner {
     index: tantivy::Index,
     reader: tantivy::IndexReader,
-    schema: Schema,
     info_hash: Field,
     title: Field,
     magnet: Field,
@@ -54,7 +53,7 @@ impl SearchIndex {
         // IMPORTANT: When opening an existing Tantivy index, always use the schema
         // stored in that index for field IDs. Mixing field IDs from a newly built
         // schema with an on-disk schema can panic inside Tantivy.
-        let (index, schema, info_hash, title, magnet, seeders) = match tantivy::Index::open(dir.clone()) {
+        let (index, info_hash, title, magnet, seeders) = match tantivy::Index::open(dir.clone()) {
             Ok(index) => {
                 let schema = index.schema();
                 let info_hash = schema.get_field("info_hash").ok();
@@ -65,7 +64,7 @@ impl SearchIndex {
                 if let (Some(info_hash), Some(title), Some(magnet), Some(seeders)) =
                     (info_hash, title, magnet, seeders)
                 {
-                    (index, schema.clone(), info_hash, title, magnet, seeders)
+                    (index, info_hash, title, magnet, seeders)
                 } else {
                     tracing::warn!(
                         path = %path.as_ref().display(),
@@ -93,7 +92,7 @@ impl SearchIndex {
                     let seeders = schema
                         .get_field("seeders")
                         .context("missing seeders field")?;
-                    (index, schema.clone(), info_hash, title, magnet, seeders)
+                    (index, info_hash, title, magnet, seeders)
                 }
             }
             Err(_) => {
@@ -110,7 +109,7 @@ impl SearchIndex {
                 let seeders = schema
                     .get_field("seeders")
                     .context("missing seeders field")?;
-                (index, schema.clone(), info_hash, title, magnet, seeders)
+                (index, info_hash, title, magnet, seeders)
             }
         };
 
@@ -126,7 +125,6 @@ impl SearchIndex {
             inner: Arc::new(SearchIndexInner {
                 index,
                 reader,
-                schema,
                 info_hash,
                 title,
                 magnet,
@@ -221,8 +219,17 @@ impl SearchIndex {
     }
 
     pub fn search(&self, q: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        self.search_page(q, 0, limit)
+    }
+
+    pub fn search_page(&self, q: &str, offset: usize, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
         let q = q.trim();
         if q.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let requested = offset.saturating_add(limit);
+        if requested == 0 {
             return Ok(Vec::new());
         }
 
@@ -231,15 +238,15 @@ impl SearchIndex {
         let searcher = self.inner.reader.searcher();
 
         let strict_query = self.build_query(q, QueryMode::Strict)?;
-        let mut scored_docs = self.search_and_score(&searcher, strict_query.as_ref(), limit)?;
+        let mut scored_docs = self.search_and_score(&searcher, strict_query.as_ref(), requested)?;
 
         // If the strict parse yields nothing, fall back to a typo-tolerant query.
         if scored_docs.is_empty() {
             let fuzzy_query = self.build_query(q, QueryMode::FuzzyFallback)?;
-            scored_docs = self.search_and_score(&searcher, fuzzy_query.as_ref(), limit)?;
+            scored_docs = self.search_and_score(&searcher, fuzzy_query.as_ref(), requested)?;
         }
 
-        Ok(scored_docs)
+        Ok(scored_docs.into_iter().skip(offset).take(limit).collect())
     }
 
     fn search_and_score(

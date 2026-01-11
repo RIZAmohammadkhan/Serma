@@ -511,17 +511,33 @@ async fn home() -> impl IntoResponse {
 #[derive(Deserialize)]
 struct SearchParams {
     q: Option<String>,
+    limit: Option<usize>,
 }
+
+const SEARCH_PAGE_SIZE: usize = 25;
+const SEARCH_MAX_LIMIT: usize = 200;
 
 async fn search_html(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
 ) -> impl IntoResponse {
     let q = params.q.unwrap_or_default();
-    let hits = if q.trim().is_empty() {
-        Vec::new()
+    let limit = params
+        .limit
+        .unwrap_or(SEARCH_PAGE_SIZE)
+        .clamp(1, SEARCH_MAX_LIMIT);
+
+    let (hits, has_more) = if q.trim().is_empty() {
+        (Vec::new(), false)
     } else {
-        state.index.search(&q, 25).unwrap_or_default()
+        // Fetch one extra so we can decide whether to show a "Load more" control.
+        let hits = state
+            .index
+            .search(&q, limit.saturating_add(1))
+            .unwrap_or_default();
+        let has_more = hits.len() > limit;
+        let hits = hits.into_iter().take(limit).collect();
+        (hits, has_more)
     };
 
     let mut items = String::new();
@@ -576,11 +592,24 @@ async fn search_html(
         ));
     }
 
+    let load_more_html = if has_more {
+        let next_limit = (limit.saturating_add(SEARCH_PAGE_SIZE)).min(SEARCH_MAX_LIMIT);
+        format!(
+            r##"<div style=\"margin-top: 18px; display:flex; justify-content:center;\">
+                    <a class=\"btn btn-ghost\" href=\"/search?q={}&limit={}\">Load more</a>
+                </div>"##,
+            url_encode(&q),
+            next_limit
+        )
+    } else {
+        String::new()
+    };
+
     let results_html = if items.is_empty() {
         r##"<div style="text-align:center; padding: 40px; color: var(--text-muted);">No results found in the nest.</div>"##
             .to_string()
     } else {
-        format!("<ul class=\"results-list\">{}</ul>", items)
+        format!("<ul class=\"results-list\">{}</ul>{}", items, load_more_html)
     };
 
     page(
@@ -590,25 +619,40 @@ async fn search_html(
             <div style="margin-top: 40px;">
                 <form action="/search" method="get" class="search-wrapper">
                     <input type="text" name="q" value="{}" placeholder="Search..." autocomplete="off" />
+                    <input type="hidden" name="limit" value="{}" />
                 </form>
                 {}
             </div>
             "##,
             html_escape(&q),
+            limit,
             results_html
         ),
     )
 }
 
+#[derive(Deserialize)]
+struct SearchApiParams {
+    q: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
 async fn search_api(
     State(state): State<AppState>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<SearchApiParams>,
 ) -> impl IntoResponse {
     let q = params.q.unwrap_or_default();
+    let offset = params.offset.unwrap_or(0);
+    let limit = params
+        .limit
+        .unwrap_or(SEARCH_PAGE_SIZE)
+        .clamp(1, SEARCH_MAX_LIMIT);
+
     let hits = if q.trim().is_empty() {
         Vec::new()
     } else {
-        state.index.search(&q, 25).unwrap_or_default()
+        state.index.search_page(&q, offset, limit).unwrap_or_default()
     };
     Json(hits)
 }
@@ -688,4 +732,22 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~' => out.push(*b as char),
+            b' ' => out.push_str("%20"),
+            other => out.push_str(&format!("%{:02X}", other)),
+        }
+    }
+    out
 }

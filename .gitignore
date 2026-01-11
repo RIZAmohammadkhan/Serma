@@ -3,9 +3,6 @@
 # Data dirs (local runtime state)
 /data/
 
-# Optional local env files
-.env
-.env.*
 
 # Logs
 *.log
