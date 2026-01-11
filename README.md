@@ -1,6 +1,6 @@
 # Serma
 
-![Logo](logo.png)
+<img src="logo.png" alt="Logo" width="200">
 
 **The local index.** A self-hosted BitTorrent DHT spider and search engine.
 
