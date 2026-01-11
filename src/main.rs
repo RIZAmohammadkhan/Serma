@@ -1,16 +1,18 @@
 mod enrich;
 mod cleanup;
+mod config;
 mod index;
 mod spider;
+mod socks5;
 mod storage;
 mod web;
 
 use anyhow::Context;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub config: config::Config,
     pub data_dir: PathBuf,
     pub db: sled::Db,
     pub index: index::SearchIndex,
@@ -24,11 +26,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let data_dir = std::env::var("SERMA_DATA_DIR")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data"));
+    let config = config::Config::load()?;
+
+    let data_dir = config.data_dir.clone();
     std::fs::create_dir_all(&data_dir).context("create data dir")?;
 
     let db = sled::open(data_dir.join("sled")).context("open sled db")?;
@@ -40,10 +40,28 @@ async fn main() -> anyhow::Result<()> {
         .context("open/create tantivy index")?;
 
     let state = AppState {
+        config: config.clone(),
         data_dir,
         db,
         index,
     };
+
+    // Optional SOCKS5 proxy health-check (privacy).
+    // This is best-effort and does not change behavior beyond logging.
+    match crate::socks5::Socks5Config::from_env() {
+        Some(Ok(cfg)) => match crate::socks5::Socks5UdpAssociate::connect(&cfg).await {
+            Ok(sock) => {
+                tracing::info!(proxy=%cfg.proxy, relay=%sock.relay_addr(), "socks5: udp associate OK");
+            }
+            Err(err) => {
+                tracing::warn!(%err, proxy=%cfg.proxy, "socks5: udp associate failed (spider will disable; enrich DHT lookups will fail)");
+            }
+        },
+        Some(Err(err)) => {
+            tracing::warn!(%err, "socks5: invalid SERMA_SOCKS5_PROXY (spider will disable; enrich DHT lookups will fail)");
+        }
+        None => {}
+    }
 
     // Background enrichment: DHT peer lookup -> ut_metadata info dict fetch -> persist full info -> reindex.
     tokio::spawn(enrich::run(state.clone()));
@@ -54,14 +72,9 @@ async fn main() -> anyhow::Result<()> {
     // Periodic cleanup: remove inactive / low-seed torrents so they don't accumulate.
     tokio::spawn(cleanup::run(state.clone()));
 
-    let addr = std::env::var("SERMA_ADDR")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-
-    if let Some(addr) = addr {
-        let addr = std::net::SocketAddr::from_str(&addr).context("parse SERMA_ADDR")?;
+    if let Some(addr) = config.http_addr {
         web::serve(state, addr).await
     } else {
-        web::serve_dual_loopback(state, 3000).await
+        web::serve_dual_loopback(state, config.web_port).await
     }
 }

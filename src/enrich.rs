@@ -1,4 +1,4 @@
-use crate::{AppState, storage};
+use crate::{config::Config, AppState, storage};
 use anyhow::Context;
 use base64::Engine as _;
 use bytes::Bytes;
@@ -17,28 +17,14 @@ use tokio::net::UdpSocket;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, timeout};
 
-const MISSING_SCAN_LIMIT: usize = 200;
-const MAX_CONCURRENT_ENRICH: usize = 64;
-// DHT peers are often unreachable (NAT/firewalls). We gather a larger set so
-// metadata enrichment has a reasonable chance to find at least one reachable
-// peer that supports BEP-10/ut_metadata.
-const PEERS_PER_HASH: usize = 64;
-
-const DHT_BOOTSTRAP: &[&str] = &[
-    "router.bittorrent.com:6881",
-    "dht.transmissionbt.com:6881",
-    "router.utorrent.com:6881",
-];
-
-const DHT_QUERY_TIMEOUT: Duration = Duration::from_millis(900);
-const DHT_MAX_QUERIES_PER_HASH: usize = 32;
+use crate::socks5::{Socks5Config, Socks5UdpAssociate};
 
 pub async fn run(state: AppState) {
     let tracker = Arc::new(TrackerClient::new());
-    let sem = Arc::new(Semaphore::new(MAX_CONCURRENT_ENRICH));
+    let sem = Arc::new(Semaphore::new(state.config.enrich_max_concurrent));
 
     loop {
-        let missing = match storage::list_missing_info(&state.db, MISSING_SCAN_LIMIT) {
+        let missing = match storage::list_missing_info(&state.db, state.config.enrich_missing_scan_limit) {
             Ok(v) => v,
             Err(err) => {
                 tracing::warn!(%err, "enrich: failed scanning sled");
@@ -83,7 +69,10 @@ async fn enrich_one(
 
     tracing::debug!(hash = %record.info_hash_hex, "enrich: start");
 
-    let peers = timeout(Duration::from_secs(12), dht_get_peers_krpc(info_hash_bytes))
+    let peers = timeout(
+        Duration::from_secs(state.config.enrich_dht_get_peers_timeout_secs),
+        dht_get_peers_krpc(&state.config, info_hash_bytes),
+    )
         .await
         .context("dht get_peers timed out")??;
 
@@ -103,20 +92,20 @@ async fn enrich_one(
 
     // Try multiple peers concurrently; many peers will refuse connections or lack ut_metadata.
     // Concurrency keeps enrichment from stalling on slow/blocked peers.
-    const MAX_METADATA_INFLIGHT: usize = 8;
-    const METADATA_OVERALL_TIMEOUT: Duration = Duration::from_secs(16);
+    let max_metadata_inflight = state.config.enrich_metadata_inflight;
+    let metadata_overall_timeout = Duration::from_secs(state.config.enrich_metadata_overall_timeout_secs);
 
     let mut tried: usize = 0;
     let mut failures_logged: usize = 0;
     let mut last_err: Option<anyhow::Error> = None;
 
     let mut join_set = tokio::task::JoinSet::new();
-    let mut peer_iter = peers.into_iter().take(PEERS_PER_HASH);
-    for _ in 0..MAX_METADATA_INFLIGHT {
+    let mut peer_iter = peers.into_iter().take(state.config.enrich_peers_per_hash);
+    for _ in 0..max_metadata_inflight {
         if let Some(peer) = peer_iter.next() {
             tried += 1;
             join_set.spawn(async move {
-                let r = timeout(METADATA_OVERALL_TIMEOUT, fetch_ut_metadata(peer, info_hash_bytes)).await;
+                let r = timeout(metadata_overall_timeout, fetch_ut_metadata(peer, info_hash_bytes)).await;
                 (peer, r)
             });
         }
@@ -166,7 +155,7 @@ async fn enrich_one(
         if let Some(next_peer) = peer_iter.next() {
             tried += 1;
             join_set.spawn(async move {
-                let r = timeout(METADATA_OVERALL_TIMEOUT, fetch_ut_metadata(next_peer, info_hash_bytes)).await;
+                let r = timeout(metadata_overall_timeout, fetch_ut_metadata(next_peer, info_hash_bytes)).await;
                 (next_peer, r)
             });
         } else if join_set.is_empty() {
@@ -233,20 +222,34 @@ async fn enrich_one(
     Ok(())
 }
 
-async fn dht_get_peers_krpc(info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAddr>> {
-    // Use separate IPv4 + (optional) IPv6 UDP sockets so we can talk to both
-    // families regardless of OS IPv6 dual-stack settings.
-    let socket_v4 = UdpSocket::bind("0.0.0.0:0").await?;
-    let socket_v6 = match UdpSocket::bind("[::]:0").await {
-        Ok(s) => Some(s),
-        Err(err) => {
-            tracing::debug!(%err, "enrich: ipv6 udp bind failed; continuing with ipv4 only");
-            None
+async fn dht_get_peers_krpc(cfg: &Config, info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAddr>> {
+    let transport = match Socks5Config::from_env() {
+        Some(Ok(cfg)) => {
+            let sock = Socks5UdpAssociate::connect(&cfg)
+                .await
+                .with_context(|| format!("enrich: connect SOCKS5 proxy {}", cfg.proxy))?;
+            DhtTransport::Socks { sock }
+        }
+        Some(Err(err)) => {
+            anyhow::bail!("enrich: invalid SERMA_SOCKS5_PROXY: {err}");
+        }
+        None => {
+            // Use separate IPv4 + (optional) IPv6 UDP sockets so we can talk to both
+            // families regardless of OS IPv6 dual-stack settings.
+            let socket_v4 = UdpSocket::bind("0.0.0.0:0").await?;
+            let socket_v6 = match UdpSocket::bind("[::]:0").await {
+                Ok(s) => Some(s),
+                Err(err) => {
+                    tracing::debug!(%err, "enrich: ipv6 udp bind failed; continuing with ipv4 only");
+                    None
+                }
+            };
+            DhtTransport::Direct { socket_v4, socket_v6 }
         }
     };
     let node_id = *PeerId::generate().as_bytes();
 
-    let bootstrap = resolve_bootstrap().await;
+    let bootstrap = resolve_bootstrap(cfg).await;
     if bootstrap.is_empty() {
         anyhow::bail!("no DHT bootstrap nodes resolved");
     }
@@ -269,42 +272,35 @@ async fn dht_get_peers_krpc(info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAdd
     // Track a small window of in-flight queries so we don't miss responses due to timing.
     // key=txid, value=(addr, sent_at)
     let mut inflight: HashMap<[u8; 2], (SocketAddr, tokio::time::Instant)> = HashMap::new();
-    const MAX_INFLIGHT: usize = 8;
+    let max_inflight: usize = cfg.enrich_dht_inflight;
 
     // Bound total time spent per hash lookup (outer timeout still applies too).
-    let overall_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let overall_deadline = tokio::time::Instant::now()
+        + Duration::from_secs(cfg.enrich_dht_overall_deadline_secs);
 
     while tokio::time::Instant::now() < overall_deadline {
-        if peers.len() >= PEERS_PER_HASH {
+        if peers.len() >= cfg.enrich_peers_per_hash {
             break;
         }
-        if queries >= DHT_MAX_QUERIES_PER_HASH {
+        if queries >= cfg.enrich_dht_max_queries_per_hash {
             break;
         }
 
         // Reap timed-out inflight requests.
         let now = tokio::time::Instant::now();
-        inflight.retain(|_, (_, sent_at)| now.saturating_duration_since(*sent_at) <= DHT_QUERY_TIMEOUT);
+        let query_timeout = Duration::from_millis(cfg.enrich_dht_query_timeout_ms);
+        inflight.retain(|_, (_, sent_at)| now.saturating_duration_since(*sent_at) <= query_timeout);
 
         // Fill the inflight window.
-        while inflight.len() < MAX_INFLIGHT
-            && queries < DHT_MAX_QUERIES_PER_HASH
-            && peers.len() < PEERS_PER_HASH
+        while inflight.len() < max_inflight
+            && queries < cfg.enrich_dht_max_queries_per_hash
+            && peers.len() < cfg.enrich_peers_per_hash
         {
             let Some((_, addr)) = q.pop() else { break };
             tx = tx.wrapping_add(1);
             let txid = tx.to_be_bytes();
             let msg = make_get_peers(txid, &node_id, &info_hash);
-            match addr.ip() {
-                IpAddr::V4(_) => {
-                    let _ = socket_v4.send_to(&msg, addr).await;
-                }
-                IpAddr::V6(_) => {
-                    if let Some(sock6) = socket_v6.as_ref() {
-                        let _ = sock6.send_to(&msg, addr).await;
-                    }
-                }
-            }
+            let _ = dht_send(&transport, &msg, addr).await;
             inflight.insert(txid, (addr, tokio::time::Instant::now()));
             queries += 1;
         }
@@ -314,24 +310,13 @@ async fn dht_get_peers_krpc(info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAdd
         }
 
         // Process responses; use a short receive timeout to keep the loop responsive.
-        let recv = async {
-            let sleep = tokio::time::sleep(Duration::from_millis(250));
-            tokio::pin!(sleep);
-            tokio::select! {
-                _ = &mut sleep => None,
-                r = socket_v4.recv_from(&mut buf4) => Some((IpAddr::V4(Ipv4Addr::UNSPECIFIED), r.map(|(n, _)| n), 4u8)),
-                r = async {
-                    if let Some(sock6) = socket_v6.as_ref() {
-                        sock6.recv_from(&mut buf6).await.map(|(n, _)| n)
-                    } else {
-                        // Never resolves when IPv6 socket is unavailable.
-                        std::future::pending::<std::io::Result<usize>>().await
-                    }
-                } => Some((IpAddr::V6(Ipv6Addr::UNSPECIFIED), r, 6u8)),
-            }
-        };
-
-        let Some((_fam, n_res, fam_tag)) = recv.await else {
+        let recv = dht_recv(
+            &transport,
+            &mut buf4,
+            &mut buf6,
+            Duration::from_millis(cfg.enrich_dht_recv_timeout_ms),
+        );
+        let Some((n_res, fam_tag)) = recv.await else {
             continue;
         };
         let Ok(n) = n_res else {
@@ -366,7 +351,7 @@ async fn dht_get_peers_krpc(info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAdd
                 if let Some(peer) = parse_compact_peer_v4(&v) {
                     if seen_peers.insert(peer) {
                         peers.push(peer);
-                        if peers.len() >= PEERS_PER_HASH {
+                        if peers.len() >= cfg.enrich_peers_per_hash {
                             break;
                         }
                     }
@@ -378,7 +363,7 @@ async fn dht_get_peers_krpc(info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAdd
                 if let Some(peer) = parse_compact_peer_v6(&v) {
                     if seen_peers.insert(peer) {
                         peers.push(peer);
-                        if peers.len() >= PEERS_PER_HASH {
+                        if peers.len() >= cfg.enrich_peers_per_hash {
                             break;
                         }
                     }
@@ -390,10 +375,79 @@ async fn dht_get_peers_krpc(info_hash: [u8; 20]) -> anyhow::Result<Vec<SocketAdd
     Ok(peers)
 }
 
-async fn resolve_bootstrap() -> Vec<SocketAddr> {
+enum DhtTransport {
+    Direct {
+        socket_v4: UdpSocket,
+        socket_v6: Option<UdpSocket>,
+    },
+    Socks {
+        sock: Socks5UdpAssociate,
+    },
+}
+
+async fn dht_send(
+    transport: &DhtTransport,
+    msg: &[u8],
+    addr: SocketAddr,
+) -> std::io::Result<usize> {
+    match transport {
+        DhtTransport::Direct { socket_v4, socket_v6 } => match addr.ip() {
+            IpAddr::V4(_) => socket_v4.send_to(msg, addr).await,
+            IpAddr::V6(_) => {
+                if let Some(sock6) = socket_v6.as_ref() {
+                    sock6.send_to(msg, addr).await
+                } else {
+                    Ok(0)
+                }
+            }
+        },
+        DhtTransport::Socks { sock } => sock.send_to(msg, addr).await,
+    }
+}
+
+async fn dht_recv(
+    transport: &DhtTransport,
+    buf4: &mut [u8],
+    buf6: &mut [u8],
+    per_recv_timeout: Duration,
+) -> Option<(std::io::Result<usize>, u8)> {
+    let sleep = tokio::time::sleep(per_recv_timeout);
+    tokio::pin!(sleep);
+
+    match transport {
+        DhtTransport::Direct { socket_v4, socket_v6 } => {
+            tokio::select! {
+                _ = &mut sleep => None,
+                r = socket_v4.recv_from(buf4) => Some((r.map(|(n, _)| n), 4u8)),
+                r = async {
+                    if let Some(sock6) = socket_v6.as_ref() {
+                        sock6.recv_from(buf6).await.map(|(n, _)| n)
+                    } else {
+                        // Never resolves when IPv6 socket is unavailable.
+                        std::future::pending::<std::io::Result<usize>>().await
+                    }
+                } => Some((r, 6u8)),
+            }
+        }
+        DhtTransport::Socks { sock } => {
+            tokio::select! {
+                _ = &mut sleep => None,
+                r = sock.recv_from(buf4) => {
+                    Some((r.map(|(n, from)| {
+                        // Place bytes in buf4; caller uses fam_tag to choose buf.
+                        let _ = from;
+                        n
+                    }), 4u8))
+                }
+            }
+        }
+    }
+}
+
+async fn resolve_bootstrap(cfg: &Config) -> Vec<SocketAddr> {
     let mut out = Vec::new();
-    for host in DHT_BOOTSTRAP {
-        match tokio::net::lookup_host(host).await {
+    for host in cfg.enrich_dht_bootstrap.iter().cloned() {
+        match tokio::net::lookup_host(&host).await {
             Ok(iter) => {
                 for addr in iter {
                     out.push(addr);

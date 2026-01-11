@@ -1,9 +1,11 @@
-use crate::{storage, AppState};
+use crate::{config::Config, storage, AppState};
 use std::collections::{HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::time::{Duration, interval};
+
+use crate::socks5::{Socks5Config, Socks5UdpAssociate};
 
 // Minimal BEP-5 DHT “spider”:
 // - Joins the DHT via bootstrap nodes (find_node)
@@ -11,138 +13,154 @@ use tokio::time::{Duration, interval};
 // - Harvests info_hash from announce_peer / get_peers queries
 // - Learns more nodes from responses (“nodes” compact format)
 
-// Default to an ephemeral UDP port so this works smoothly on home networks
-// (no need to open/forward a port).
-const DEFAULT_BIND: &str = "0.0.0.0:0";
-const DEFAULT_BOOTSTRAP: &[&str] = &[
-    "router.bittorrent.com:6881",
-    "dht.transmissionbt.com:6881",
-    "router.utorrent.com:6881",
-];
-
-const MAX_KNOWN_NODES: usize = 10_000;
-
-// Dedupe for incoming/sampled info-hashes.
-//
-// Goal: avoid hammering sled with repeated upserts for the same hot hash.
-// We use a rotating Bloom filter (two windows) to keep memory bounded and
-// prevent "clear-and-thrash" behavior under high cardinality.
-const SEEN_ROTATE_EVERY: Duration = Duration::from_secs(15 * 60);
-const SEEN_BITS_POW2: u32 = 26; // 2^26 bits ~= 8 MiB per filter, 16 MiB total (two windows)
-const SEEN_K: u8 = 12;
-
-const SAMPLE_EVERY: Duration = Duration::from_secs(5);
-const SAMPLE_PER_TICK: usize = 12;
-const MAX_SAMPLES_PER_MSG: usize = 256;
-
 pub async fn run(state: AppState) {
     // Allow disabling the spider entirely.
-    if std::env::var("SERMA_SPIDER")
-        .ok()
-        .is_some_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no"))
-    {
+    if !state.config.spider_enabled {
         tracing::info!("spider: disabled via SERMA_SPIDER");
         return;
     }
 
-    let bind = std::env::var("SERMA_SPIDER_BIND")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_BIND.to_string());
+    let sockets = match Socks5Config::from_env() {
+        Some(Ok(cfg)) => {
+            if std::env::var("SERMA_SPIDER_BIND").ok().is_some_and(|v| !v.trim().is_empty()) {
+                tracing::info!("spider: SERMA_SPIDER_BIND ignored when SERMA_SOCKS5_PROXY is set");
+            }
 
-    // Use separate IPv4 + (optional) IPv6 UDP sockets so we can talk to both
-    // families regardless of OS IPv6 dual-stack settings.
-    let primary = match UdpSocket::bind(&bind).await {
-        Ok(s) => s,
-        Err(err) => {
-            tracing::warn!(%err, bind = %bind, "spider: failed to bind; trying ephemeral v4");
-            match UdpSocket::bind("0.0.0.0:0").await {
-                Ok(s) => s,
+            match Socks5UdpAssociate::connect(&cfg).await {
+                Ok(sock) => {
+                    tracing::info!(proxy=%cfg.proxy, relay=%sock.relay_addr(), "spider: using SOCKS5 UDP proxy");
+                    DhtSockets::Socks { sock }
+                }
                 Err(err) => {
-                    tracing::warn!(%err, "spider: failed to bind UDP socket; spider disabled");
+                    // Fail closed: if the user asked for proxying, don't silently fall back to direct.
+                    tracing::warn!(%err, proxy=%cfg.proxy, "spider: failed to set up SOCKS5 proxy; spider disabled");
                     return;
                 }
             }
         }
-    };
-
-    let primary_addr = match primary.local_addr() {
-        Ok(a) => a,
-        Err(err) => {
-            tracing::warn!(%err, "spider: failed to get local addr");
+        Some(Err(err)) => {
+            tracing::warn!(%err, "spider: invalid SERMA_SOCKS5_PROXY; spider disabled");
             return;
         }
-    };
+        None => {
+            let bind = state.config.spider_bind.clone();
 
-    let (socket_v4, socket_v6): (Option<UdpSocket>, Option<UdpSocket>) = if primary_addr.is_ipv4()
-    {
-        let socket_v6 = match UdpSocket::bind("[::]:0").await {
-            Ok(s) => Some(s),
-            Err(err) => {
-                tracing::debug!(%err, "spider: ipv6 udp bind failed; continuing with ipv4 only");
-                None
+            // Use separate IPv4 + (optional) IPv6 UDP sockets so we can talk to both
+            // families regardless of OS IPv6 dual-stack settings.
+            let primary = match UdpSocket::bind(&bind).await {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!(%err, bind = %bind, "spider: failed to bind; trying ephemeral v4");
+                    match UdpSocket::bind("0.0.0.0:0").await {
+                        Ok(s) => s,
+                        Err(err) => {
+                            tracing::warn!(%err, "spider: failed to bind UDP socket; spider disabled");
+                            return;
+                        }
+                    }
+                }
+            };
+
+            let primary_addr = match primary.local_addr() {
+                Ok(a) => a,
+                Err(err) => {
+                    tracing::warn!(%err, "spider: failed to get local addr");
+                    return;
+                }
+            };
+
+            let (socket_v4, socket_v6): (Option<UdpSocket>, Option<UdpSocket>) = if primary_addr.is_ipv4()
+            {
+                let socket_v6 = match UdpSocket::bind("[::]:0").await {
+                    Ok(s) => Some(s),
+                    Err(err) => {
+                        tracing::debug!(%err, "spider: ipv6 udp bind failed; continuing with ipv4 only");
+                        None
+                    }
+                };
+                (Some(primary), socket_v6)
+            } else {
+                let socket_v4 = match UdpSocket::bind("0.0.0.0:0").await {
+                    Ok(s) => Some(s),
+                    Err(err) => {
+                        tracing::debug!(%err, "spider: ipv4 udp bind failed; continuing with ipv6 only");
+                        None
+                    }
+                };
+                (socket_v4, Some(primary))
+            };
+
+            DhtSockets::Direct {
+                socket_v4,
+                socket_v6,
             }
-        };
-        (Some(primary), socket_v6)
-    } else {
-        let socket_v4 = match UdpSocket::bind("0.0.0.0:0").await {
-            Ok(s) => Some(s),
-            Err(err) => {
-                tracing::debug!(%err, "spider: ipv4 udp bind failed; continuing with ipv6 only");
-                None
-            }
-        };
-        (socket_v4, Some(primary))
+        }
     };
 
     // DHT node id: 20 random-ish bytes. We reuse rbit’s peer-id generator (also 20 bytes).
     let node_id = *rbit::peer::PeerId::generate().as_bytes();
 
-    if let Some(sock) = socket_v4.as_ref() {
-        if let Ok(a) = sock.local_addr() {
-            tracing::info!(bind=%a, "spider: listening (ipv4)");
+    match &sockets {
+        DhtSockets::Direct { socket_v4, socket_v6 } => {
+            if let Some(sock) = socket_v4.as_ref() {
+                if let Ok(a) = sock.local_addr() {
+                    tracing::info!(bind=%a, "spider: listening (ipv4)");
+                }
+            }
+            if let Some(sock) = socket_v6.as_ref() {
+                if let Ok(a) = sock.local_addr() {
+                    tracing::info!(bind=%a, "spider: listening (ipv6)");
+                }
+            }
         }
-    }
-    if let Some(sock) = socket_v6.as_ref() {
-        if let Ok(a) = sock.local_addr() {
-            tracing::info!(bind=%a, "spider: listening (ipv6)");
+        DhtSockets::Socks { sock } => {
+            tracing::info!(relay=%sock.relay_addr(), "spider: listening (via socks5 relay)");
         }
     }
 
     let mut known_nodes: VecDeque<SocketAddr> = VecDeque::new();
     let mut known_set: HashSet<SocketAddr> = HashSet::new();
 
-    let mut seen_hashes = RollingBloom::new(SEEN_BITS_POW2, SEEN_K, SEEN_ROTATE_EVERY);
+    let mut seen_hashes = RollingBloom::new(
+        state.config.spider_seen_bits_pow2,
+        state.config.spider_seen_k,
+        Duration::from_secs(state.config.spider_seen_rotate_every_secs),
+    );
 
     // Bootstrap right away.
-    for addr in resolve_bootstrap().await {
-        push_node(addr, &mut known_nodes, &mut known_set);
+    for addr in resolve_bootstrap(&state.config).await {
+        push_node(
+            addr,
+            &mut known_nodes,
+            &mut known_set,
+            state.config.spider_max_known_nodes,
+        );
     }
-    bootstrap_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
+    bootstrap_tick(&sockets, &node_id, &mut known_nodes).await;
 
     // Actively sample info-hashes from the network (BEP-51) so we still discover
     // content even when we're behind NAT and not receiving unsolicited queries.
-    sample_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
+    sample_tick(&sockets, &node_id, &mut known_nodes, state.config.spider_sample_per_tick).await;
 
-    let mut boot_int = interval(Duration::from_secs(15));
-    let mut gc_int = interval(Duration::from_secs(30));
-    let mut sample_int = interval(SAMPLE_EVERY);
+    let mut boot_int = interval(Duration::from_secs(state.config.spider_bootstrap_every_secs.max(1)));
+    let mut gc_int = interval(Duration::from_secs(state.config.spider_gc_every_secs.max(1)));
+    let mut sample_int = interval(Duration::from_secs(state.config.spider_sample_every_secs.max(1)));
 
     let mut buf4 = vec![0u8; 4096];
     let mut buf6 = vec![0u8; 4096];
     loop {
         tokio::select! {
             _ = boot_int.tick() => {
-                bootstrap_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
+                bootstrap_tick(&sockets, &node_id, &mut known_nodes).await;
             }
             _ = sample_int.tick() => {
-                sample_tick(socket_v4.as_ref(), socket_v6.as_ref(), &node_id, &mut known_nodes).await;
+                sample_tick(&sockets, &node_id, &mut known_nodes, state.config.spider_sample_per_tick).await;
             }
             _ = gc_int.tick() => {
                 // Keep the rolling Bloom filter fresh.
                 seen_hashes.maybe_rotate();
-                if known_nodes.len() > MAX_KNOWN_NODES {
-                    while known_nodes.len() > MAX_KNOWN_NODES {
+                if known_nodes.len() > state.config.spider_max_known_nodes {
+                    while known_nodes.len() > state.config.spider_max_known_nodes {
                         if let Some(old) = known_nodes.pop_front() {
                             known_set.remove(&old);
                         } else {
@@ -151,7 +169,7 @@ pub async fn run(state: AppState) {
                     }
                 }
             }
-            recv = recv_from_any(socket_v4.as_ref(), socket_v6.as_ref(), &mut buf4, &mut buf6) => {
+            recv = recv_from_any(&sockets, &mut buf4, &mut buf6) => {
                 let Some((n, from, fam)) = recv else {
                     continue;
                 };
@@ -164,18 +182,31 @@ pub async fn run(state: AppState) {
                     // Learn nodes from responses.
                     if let Some(nodes) = msg.compact_nodes() {
                         for addr in parse_compact_nodes(nodes) {
-                            push_node(addr, &mut known_nodes, &mut known_set);
+                            push_node(
+                                addr,
+                                &mut known_nodes,
+                                &mut known_set,
+                                state.config.spider_max_known_nodes,
+                            );
                         }
                     }
                     if let Some(nodes6) = msg.compact_nodes_v6() {
                         for addr in parse_compact_nodes_v6(nodes6) {
-                            push_node(addr, &mut known_nodes, &mut known_set);
+                            push_node(
+                                addr,
+                                &mut known_nodes,
+                                &mut known_set,
+                                state.config.spider_max_known_nodes,
+                            );
                         }
                     }
 
                     // Active discovery: harvest info_hash from BEP-51 sample_infohashes responses.
                     if let Some(samples) = msg.samples_from_response() {
-                        for chunk in samples.chunks_exact(20).take(MAX_SAMPLES_PER_MSG) {
+                        for chunk in samples
+                            .chunks_exact(20)
+                            .take(state.config.spider_max_samples_per_msg)
+                        {
                             let mut info_hash = [0u8; 20];
                             info_hash.copy_from_slice(chunk);
                             if should_accept_hash(&mut seen_hashes, info_hash) {
@@ -206,19 +237,34 @@ pub async fn run(state: AppState) {
                     // Respond to queries so we remain a "good" node.
                     if msg.is_query() {
                         if let Some(resp) = msg.make_minimal_response(&node_id) {
-                            send_to_family(socket_v4.as_ref(), socket_v6.as_ref(), &resp, from)
+                            send_to_family(&sockets, &resp, from)
                                 .await;
                         }
                     }
 
                     // If we get a query from this node, keep it as known.
                     if msg.is_query() {
-                        push_node(from, &mut known_nodes, &mut known_set);
+                        push_node(
+                            from,
+                            &mut known_nodes,
+                            &mut known_set,
+                            state.config.spider_max_known_nodes,
+                        );
                     }
                 }
             }
         }
     }
+}
+
+enum DhtSockets {
+    Direct {
+        socket_v4: Option<UdpSocket>,
+        socket_v6: Option<UdpSocket>,
+    },
+    Socks {
+        sock: Socks5UdpAssociate,
+    },
 }
 
 fn ingest_spidered_hash(state: &AppState, info_hash_hex: &str) -> anyhow::Result<()> {
@@ -364,7 +410,12 @@ fn bloom_hashes(item: &[u8; 20]) -> (u64, u64) {
     (h1, h2)
 }
 
-fn push_node(addr: SocketAddr, q: &mut VecDeque<SocketAddr>, set: &mut HashSet<SocketAddr>) {
+fn push_node(
+    addr: SocketAddr,
+    q: &mut VecDeque<SocketAddr>,
+    set: &mut HashSet<SocketAddr>,
+    cap: usize,
+) {
     if addr.port() == 0 {
         return;
     }
@@ -374,7 +425,7 @@ fn push_node(addr: SocketAddr, q: &mut VecDeque<SocketAddr>, set: &mut HashSet<S
 
     if set.insert(addr) {
         q.push_back(addr);
-        if q.len() > MAX_KNOWN_NODES {
+        if q.len() > cap {
             if let Some(old) = q.pop_front() {
                 set.remove(&old);
             }
@@ -424,19 +475,9 @@ fn is_publicly_routable_ip(ip: IpAddr) -> bool {
     }
 }
 
-async fn resolve_bootstrap() -> Vec<SocketAddr> {
-    let custom = std::env::var("SERMA_SPIDER_BOOTSTRAP")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-
+async fn resolve_bootstrap(cfg: &Config) -> Vec<SocketAddr> {
     let mut out = Vec::new();
-    let list: Vec<String> = if let Some(s) = custom {
-        s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
-    } else {
-        DEFAULT_BOOTSTRAP.iter().map(|s| s.to_string()).collect()
-    };
-
-    for host in list {
+    for host in cfg.spider_bootstrap.iter().cloned() {
         match tokio::net::lookup_host(&host).await {
             Ok(iter) => {
                 for addr in iter {
@@ -453,8 +494,7 @@ async fn resolve_bootstrap() -> Vec<SocketAddr> {
 }
 
 async fn bootstrap_tick(
-    socket_v4: Option<&UdpSocket>,
-    socket_v6: Option<&UdpSocket>,
+    sockets: &DhtSockets,
     node_id: &[u8; 20],
     known: &mut VecDeque<SocketAddr>,
 ) {
@@ -468,7 +508,7 @@ async fn bootstrap_tick(
         let target = *rbit::peer::PeerId::generate().as_bytes();
         let tx = next_txid();
         let msg = make_find_node(tx, node_id, &target);
-        send_to_family(socket_v4, socket_v6, &msg, addr).await;
+        send_to_family(sockets, &msg, addr).await;
     }
 }
 
@@ -694,13 +734,13 @@ impl<'a> KrpcMessage<'a> {
 }
 
 async fn sample_tick(
-    socket_v4: Option<&UdpSocket>,
-    socket_v6: Option<&UdpSocket>,
+    sockets: &DhtSockets,
     node_id: &[u8; 20],
     known: &mut VecDeque<SocketAddr>,
+    per_tick: usize,
 ) {
     // Query a handful of known nodes for hash samples (BEP-51).
-    for _ in 0..SAMPLE_PER_TICK {
+    for _ in 0..per_tick {
         let Some(addr) = known.pop_front() else {
             break;
         };
@@ -709,51 +749,63 @@ async fn sample_tick(
         let target = *rbit::peer::PeerId::generate().as_bytes();
         let tx = next_txid();
         let msg = make_sample_infohashes(tx, node_id, &target);
-        send_to_family(socket_v4, socket_v6, &msg, addr).await;
+        send_to_family(sockets, &msg, addr).await;
     }
 }
 
 async fn send_to_family(
-    socket_v4: Option<&UdpSocket>,
-    socket_v6: Option<&UdpSocket>,
+    sockets: &DhtSockets,
     msg: &[u8],
     addr: SocketAddr,
 ) {
-    match addr.ip() {
-        IpAddr::V4(_) => {
-            if let Some(sock) = socket_v4 {
-                let _ = sock.send_to(msg, addr).await;
+    match sockets {
+        DhtSockets::Direct { socket_v4, socket_v6 } => match addr.ip() {
+            IpAddr::V4(_) => {
+                if let Some(sock) = socket_v4.as_ref() {
+                    let _ = sock.send_to(msg, addr).await;
+                }
             }
-        }
-        IpAddr::V6(_) => {
-            if let Some(sock) = socket_v6 {
-                let _ = sock.send_to(msg, addr).await;
+            IpAddr::V6(_) => {
+                if let Some(sock) = socket_v6.as_ref() {
+                    let _ = sock.send_to(msg, addr).await;
+                }
             }
+        },
+        DhtSockets::Socks { sock } => {
+            let _ = sock.send_to(msg, addr).await;
         }
     }
 }
 
 async fn recv_from_any(
-    socket_v4: Option<&UdpSocket>,
-    socket_v6: Option<&UdpSocket>,
+    sockets: &DhtSockets,
     buf4: &mut [u8],
     buf6: &mut [u8],
 ) -> Option<(usize, SocketAddr, u8)> {
-    tokio::select! {
-        r = async {
-            if let Some(sock) = socket_v4 {
-                sock.recv_from(buf4).await
-            } else {
-                std::future::pending::<std::io::Result<(usize, SocketAddr)>>().await
+    match sockets {
+        DhtSockets::Direct { socket_v4, socket_v6 } => {
+            tokio::select! {
+                r = async {
+                    if let Some(sock) = socket_v4.as_ref() {
+                        sock.recv_from(buf4).await
+                    } else {
+                        std::future::pending::<std::io::Result<(usize, SocketAddr)>>().await
+                    }
+                } => r.ok().map(|(n, from)| (n, from, 4u8)),
+                r = async {
+                    if let Some(sock) = socket_v6.as_ref() {
+                        sock.recv_from(buf6).await
+                    } else {
+                        std::future::pending::<std::io::Result<(usize, SocketAddr)>>().await
+                    }
+                } => r.ok().map(|(n, from)| (n, from, 6u8)),
             }
-        } => r.ok().map(|(n, from)| (n, from, 4u8)),
-        r = async {
-            if let Some(sock) = socket_v6 {
-                sock.recv_from(buf6).await
-            } else {
-                std::future::pending::<std::io::Result<(usize, SocketAddr)>>().await
-            }
-        } => r.ok().map(|(n, from)| (n, from, 6u8)),
+        }
+        DhtSockets::Socks { sock } => sock
+            .recv_from(buf4)
+            .await
+            .ok()
+            .map(|(n, from)| (n, from, if from.is_ipv4() { 4u8 } else { 6u8 })),
     }
 }
 

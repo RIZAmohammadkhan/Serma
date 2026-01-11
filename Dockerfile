@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifest files
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 
 # Copy source code
 COPY src ./src
@@ -43,6 +43,9 @@ WORKDIR /app
 
 # Copy the binary from the builder stage
 COPY --from=builder /usr/src/app/target/release/serma /usr/local/bin/serma
+
+# Ship the env template for convenience (optional)
+COPY .env.example /usr/local/share/serma/.env.example
 
 # Set environment variables
 ENV RUST_LOG=info

@@ -60,14 +60,36 @@ Navigate to `http://localhost:3000` in your browser to start searching.
 
 ## Configuration
 
-Serma is configured via environment variables:
+Serma is configured via environment variables, optionally loaded from a local `.env` file.
+
+### Using an `.env` file (recommended)
+
+```bash
+cp .env.example .env
+$EDITOR .env
+./target/release/serma
+```
+
+Precedence:
+- Process environment variables override `.env`
+- `.env` overrides built-in defaults
+
+The complete, up-to-date list of configuration options lives in `.env.example`.
+
+### Common variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SERMA_DATA_DIR` | `data` | Directory for database and index storage |
-| `SERMA_ADDR` | `127.0.0.1:3000` | HTTP server bind address (IPv4 and IPv6 loopback) |
+| `SERMA_ADDR` | (unset) | HTTP server bind address (if unset, dual loopback is used) |
+| `SERMA_WEB_PORT` | `3000` | Web port used when `SERMA_ADDR` is unset (binds `127.0.0.1` and `::1`) |
 | `SERMA_SPIDER` | enabled | Set to `0`, `false`, `off`, or `no` to disable DHT spider |
 | `SERMA_SPIDER_BIND` | `0.0.0.0:0` | UDP bind address for DHT spider |
+| `SERMA_SPIDER_BOOTSTRAP` | built-in list | Comma-separated DHT bootstrap nodes |
+| `SERMA_CLEANUP` | enabled | Set to `0`, `false`, `off`, or `no` to disable cleanup |
+| `SERMA_SOCKS5_PROXY` | (unset) | Optional SOCKS5 proxy for DHT UDP traffic (e.g. `socks5://127.0.0.1:1080` or `socks5://user:pass@host:1080`) |
+| `SERMA_SOCKS5_USERNAME` | (unset) | SOCKS5 username (if not provided in URL) |
+| `SERMA_SOCKS5_PASSWORD` | (unset) | SOCKS5 password (if not provided in URL) |
 | `RUST_LOG` | `info` | Log level (trace, debug, info, warn, error) |
 
 ### Examples
@@ -90,6 +112,11 @@ RUST_LOG=debug ./target/release/serma
 **Disable the DHT spider (search-only mode):**
 ```bash
 SERMA_SPIDER=false ./target/release/serma
+```
+
+**Proxy DHT traffic via SOCKS5 (privacy):**
+```bash
+SERMA_SOCKS5_PROXY=socks5://127.0.0.1:1080 ./target/release/serma
 ```
 
 ## API Endpoints
@@ -178,6 +205,7 @@ data/
 - You are discovering content that others are sharing; you are not hosting or distributing it
 - Be aware of the legal implications in your jurisdiction
 - Consider using a VPN if privacy is a concern
+- Alternatively, set `SERMA_SOCKS5_PROXY` to route DHT UDP traffic via a SOCKS5 proxy
 - **Do not** expose the web interface to the public internet without authentication
 
 See [LICENSE](LICENSE) for the full disclaimer.
@@ -226,8 +254,8 @@ cargo test
 
 ### Disk space filling up
 
-- Serma includes automatic cleanup that runs every 2 hours
-- Adjust cleanup thresholds in `cleanup.rs` if needed
+- Serma includes automatic cleanup (default: every 10s; see `.env.example`)
+- Adjust cleanup thresholds in `.env` if needed
 - Manually delete `data/` and restart to reset the index
 
 ## Contributing

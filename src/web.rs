@@ -8,9 +8,10 @@ use axum::{
 use serde::Deserialize;
 
 const APP_TITLE: &str = "Serma";
-const APP_TAGLINE: &str = "The local index.";
 
-// Icons (Stroke width adjusted for dark mode contrast)
+// Icons
+// 1. A custom Snake Icon for the logo
+const ICON_SNAKE: &str = r##"<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12c0 1.82.486 3.53 1.34 5"/><path d="M12 8a4 4 0 1 0-4 4"/><circle cx="15" cy="9" r="1" fill="currentColor"/><path d="M6 17l-1 2"/></svg>"##;
 const ICON_MAGNET: &str = r##"<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3a2 2 0 0 0-2 2v7a7 7 0 0 0 14 0V5a2 2 0 0 0-2-2h-2v9a3 3 0 0 1-6 0V3H7Z"/><path d="M9 3v9a3 3 0 0 0 6 0V3" opacity="0.5"/></svg>"##;
 const ICON_COPY: &str = r##"<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>"##;
 const ICON_SEARCH: &str = r##"<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>"##;
@@ -33,26 +34,33 @@ fn page(title: &str, body: String) -> Html<String> {
     <title>{}</title>
     <style>
         :root {{
-            --bg: #09090b;
-            --surface: #121214;
-            --surface-hover: #1c1c1f;
-            --border: #27272a;
-            --border-hover: #3f3f46;
+            /* Theme: Dark Warm Grey Background */
+            --bg: #1a1816;
+            --surface: #262320;
+            --surface-hover: #332f2b;
+            --border: #3f3a35;
             
-            --text-main: #ededed;
-            --text-muted: #a1a1aa;
-            --text-faint: #52525b;
+            /* Logo Colors */
+            --snake-orange: #ff9f1c;   /* Main Body */
+            --snake-yellow: #ffbf69;   /* Highlights */
+            --snake-green: #8ac926;    /* Spots */
+            --snake-tongue: #ff5d73;   /* Accents */
+
+            /* Text */
+            --text-main: #f0ece9;
+            --text-muted: #9e968f;
+            --text-faint: #635d57;
             
-            --accent: #fff;
-            --accent-bg: #fff;
-            --accent-text: #000;
-            
-            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --font-sans: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             --font-mono: "JetBrains Mono", "SF Mono", Consolas, Menlo, monospace;
             
-            --radius: 6px;
+            /* Shapes - High radius for that "coiled snake" feel */
+            --radius: 16px;
+            --radius-pill: 99px;
             --container-width: 800px;
         }}
+
+        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap');
 
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         
@@ -60,8 +68,8 @@ fn page(title: &str, body: String) -> Html<String> {
             background-color: var(--bg);
             color: var(--text-main);
             font-family: var(--font-sans);
-            font-size: 14px;
-            line-height: 1.5;
+            font-size: 15px;
+            line-height: 1.6;
             -webkit-font-smoothing: antialiased;
             display: flex;
             flex-direction: column;
@@ -69,7 +77,7 @@ fn page(title: &str, body: String) -> Html<String> {
         }}
 
         a {{ text-decoration: none; color: inherit; transition: color 0.2s; }}
-        a:hover {{ color: var(--accent); }}
+        a:hover {{ color: var(--snake-orange); }}
 
         /* Utility */
         .container {{
@@ -87,11 +95,11 @@ fn page(title: &str, body: String) -> Html<String> {
         /* Navigation */
         header {{
             border-bottom: 1px solid var(--border);
-            padding: 16px 0;
+            padding: 20px 0;
             position: sticky;
             top: 0;
-            background: rgba(9, 9, 11, 0.8);
-            backdrop-filter: blur(8px);
+            background: rgba(26, 24, 22, 0.85); /* Matches --bg but translucent */
+            backdrop-filter: blur(12px);
             z-index: 10;
         }}
         .nav-inner {{
@@ -100,19 +108,23 @@ fn page(title: &str, body: String) -> Html<String> {
             align-items: center;
         }}
         .brand {{
-            font-weight: 700;
-            font-size: 16px;
+            font-weight: 800;
+            font-size: 20px;
             letter-spacing: -0.02em;
             display: flex;
             align-items: center;
             gap: 10px;
+            color: var(--snake-orange);
         }}
-        .brand-dot {{
-            width: 8px;
-            height: 8px;
-            background: var(--accent);
-            border-radius: 50%;
+        .brand svg {{
+            color: var(--snake-orange);
         }}
+        .nav-link {{
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--text-muted);
+        }}
+        .nav-link:hover {{ color: var(--text-main); }}
 
         /* Inputs & Forms */
         .search-wrapper {{
@@ -122,18 +134,23 @@ fn page(title: &str, body: String) -> Html<String> {
         input[type="text"] {{
             width: 100%;
             background: var(--surface);
-            border: 1px solid var(--border);
+            border: 2px solid var(--border);
             color: var(--text-main);
-            padding: 12px 16px;
-            border-radius: var(--radius);
-            font-size: 15px;
+            padding: 14px 20px;
+            border-radius: var(--radius-pill);
+            font-size: 16px;
             transition: all 0.2s ease;
             font-family: var(--font-sans);
+            font-weight: 600;
+        }}
+        input[type="text"]::placeholder {{
+            color: var(--text-faint);
         }}
         input[type="text"]:focus {{
             outline: none;
-            border-color: var(--text-muted);
+            border-color: var(--snake-orange);
             background: var(--surface-hover);
+            box-shadow: 0 0 0 4px rgba(255, 159, 28, 0.15);
         }}
         
         /* Buttons */
@@ -142,38 +159,39 @@ fn page(title: &str, body: String) -> Html<String> {
             align-items: center;
             justify-content: center;
             gap: 8px;
-            padding: 8px 16px;
-            border-radius: var(--radius);
-            font-weight: 500;
-            font-size: 13px;
+            padding: 10px 20px;
+            border-radius: var(--radius-pill);
+            font-weight: 700;
+            font-size: 14px;
             cursor: pointer;
             transition: all 0.2s;
-            border: 1px solid transparent;
+            border: 2px solid transparent;
         }}
         .btn-primary {{
-            background: var(--accent-bg);
-            color: var(--accent-text);
+            background: var(--snake-orange);
+            color: #1a1816; /* Dark background text for contrast */
         }}
         .btn-primary:hover {{
-            opacity: 0.9;
+            background: var(--snake-yellow);
+            transform: translateY(-1px);
         }}
         .btn-ghost {{
             background: transparent;
-            border: 1px solid var(--border);
+            border: 2px solid var(--border);
             color: var(--text-main);
         }}
         .btn-ghost:hover {{
             background: var(--surface-hover);
-            border-color: var(--border-hover);
+            border-color: var(--text-muted);
         }}
         .btn-icon {{
             padding: 8px;
             color: var(--text-muted);
+            border-radius: 50%;
         }}
         .btn-icon:hover {{
-            color: var(--text-main);
+            color: var(--snake-orange);
             background: var(--surface-hover);
-            border-radius: var(--radius);
         }}
 
         /* Lists & Cards */
@@ -182,22 +200,22 @@ fn page(title: &str, body: String) -> Html<String> {
             margin-top: 24px;
             display: flex;
             flex-direction: column;
-            gap: 1px; /* Divider look */
-            background: var(--border); /* Creates lines between items */
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            overflow: hidden;
+            gap: 12px;
         }}
         .list-item {{
-            background: var(--bg);
-            padding: 16px 20px;
+            background: var(--surface);
+            padding: 20px 24px;
             display: flex;
             flex-direction: column;
             gap: 8px;
-            transition: background 0.15s;
+            border-radius: var(--radius);
+            border: 1px solid transparent;
+            transition: all 0.2s;
         }}
         .list-item:hover {{
-            background: var(--surface);
+            background: var(--surface-hover);
+            transform: scale(1.01);
+            border-color: var(--border);
         }}
         .item-header {{
             display: flex;
@@ -206,28 +224,28 @@ fn page(title: &str, body: String) -> Html<String> {
             gap: 16px;
         }}
         .item-title {{
-            font-weight: 500;
-            font-size: 15px;
+            font-weight: 700;
+            font-size: 16px;
             color: var(--text-main);
             line-height: 1.4;
         }}
         .item-meta {{
             display: flex;
             gap: 16px;
-            font-size: 12px;
+            font-size: 13px;
             color: var(--text-muted);
             align-items: center;
-            margin-top: 4px;
+            margin-top: 6px;
         }}
+        /* The Green Spots (Badges) */
         .badge {{
             display: inline-block;
-            padding: 2px 6px;
-            border-radius: 4px;
-            background: var(--surface-hover);
-            border: 1px solid var(--border);
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--text-muted);
+            padding: 3px 10px;
+            border-radius: var(--radius-pill);
+            background: var(--snake-green);
+            color: #1a1816;
+            font-size: 12px;
+            font-weight: 800;
             font-family: var(--font-mono);
         }}
         
@@ -241,62 +259,73 @@ fn page(title: &str, body: String) -> Html<String> {
             gap: 24px;
         }}
         .hero h2 {{
-            font-size: 32px;
-            font-weight: 600;
-            letter-spacing: -0.03em;
+            font-size: 40px;
+            font-weight: 800;
+            color: var(--snake-orange);
+            letter-spacing: -0.02em;
+            margin-bottom: -10px;
         }}
         .hero p {{
             color: var(--text-muted);
-            max-width: 460px;
-            font-size: 16px;
+            max-width: 480px;
+            font-size: 18px;
         }}
         .hero-search {{
             width: 100%;
-            max-width: 500px;
-            margin-top: 16px;
+            max-width: 540px;
+            margin-top: 24px;
         }}
 
         /* Detail Page */
         .detail-card {{
             margin-top: 32px;
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
+            border: 2px solid var(--border);
+            border-radius: 24px;
             background: var(--surface);
-            padding: 32px;
+            padding: 40px;
         }}
         .detail-header {{
-            border-bottom: 1px solid var(--border);
+            border-bottom: 2px solid var(--border);
             padding-bottom: 24px;
             margin-bottom: 24px;
         }}
         .detail-title {{
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 12px;
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            color: var(--snake-orange);
         }}
         .magnet-box {{
             background: var(--bg);
-            border: 1px solid var(--border);
+            border: 2px dashed var(--border);
             border-radius: var(--radius);
-            padding: 4px;
+            padding: 6px;
             display: flex;
             gap: 8px;
-            margin-top: 16px;
+            margin-top: 24px;
+        }}
+        .magnet-box:focus-within {{
+            border-color: var(--snake-green);
+            border-style: solid;
         }}
         .magnet-box input {{
             border: none;
             background: transparent;
             font-family: var(--font-mono);
-            font-size: 12px;
+            font-size: 13px;
             color: var(--text-muted);
+            padding: 0 12px;
         }}
-        .magnet-box input:focus {{ background: transparent; }}
+        .magnet-box input:focus {{ 
+            background: transparent; 
+            box-shadow: none;
+        }}
 
         /* Footer */
         footer {{
             margin-top: auto;
             border-top: 1px solid var(--border);
-            padding: 32px 0;
+            padding: 40px 0;
             color: var(--text-faint);
             font-size: 13px;
             text-align: center;
@@ -305,19 +334,20 @@ fn page(title: &str, body: String) -> Html<String> {
         /* Toast */
         .toast {{
             position: fixed;
-            bottom: 24px;
-            right: 24px;
-            background: var(--text-main);
-            color: var(--bg);
-            padding: 10px 16px;
-            border-radius: var(--radius);
-            font-weight: 500;
-            font-size: 13px;
+            bottom: 32px;
+            right: 32px;
+            background: var(--snake-green);
+            color: #1a1816;
+            padding: 12px 20px;
+            border-radius: var(--radius-pill);
+            font-weight: 700;
+            font-size: 14px;
             transform: translateY(100px);
             opacity: 0;
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
             pointer-events: none;
             z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }}
         .toast.show {{ transform: translateY(0); opacity: 1; }}
 
@@ -325,8 +355,9 @@ fn page(title: &str, body: String) -> Html<String> {
         @media (max-width: 600px) {{
             :root {{ --container-width: 100%; }}
             .hero {{ padding: 40px 0; }}
-            .hero h2 {{ font-size: 24px; }}
-            .item-header {{ flex-direction: column; gap: 8px; }}
+            .hero h2 {{ font-size: 32px; }}
+            .item-header {{ flex-direction: column; gap: 12px; }}
+            .detail-card {{ padding: 24px; }}
         }}
     </style>
 </head>
@@ -334,12 +365,12 @@ fn page(title: &str, body: String) -> Html<String> {
     <header>
         <div class="container nav-inner">
             <a href="/" class="brand">
-                <div class="brand-dot"></div>
+                {}
                 {}
             </a>
             <nav class="flex gap-4">
-                <a href="/" class="muted" style="font-size:13px;">Home</a>
-                <a href="/search" class="muted" style="font-size:13px;">Browse</a>
+                <a href="/" class="nav-link">Home</a>
+                <a href="/search" class="nav-link">Browse</a>
             </nav>
         </div>
     </header>
@@ -379,7 +410,6 @@ fn page(title: &str, body: String) -> Html<String> {
                 await navigator.clipboard.writeText(text);
                 showToast('Copied to clipboard');
             }} catch (err) {{
-                // Fallback
                 const ta = document.createElement('textarea');
                 ta.value = text;
                 document.body.appendChild(ta);
@@ -393,6 +423,7 @@ fn page(title: &str, body: String) -> Html<String> {
 </body>
 </html>"##,
         html_escape(&full_title),
+        ICON_SNAKE,
         html_escape(APP_TITLE),
         body
     ))
@@ -460,13 +491,13 @@ async fn home() -> impl IntoResponse {
         format!(
             r##"
             <main class="hero">
-                <h2>Local Index</h2>
-                <p>Serma continuously discovers hashes, enriches metadata, and ranks by seeders locally.</p>
+                <h2>The Local Index</h2>
+                <p>Serma continuously discovers hashes, enriches metadata, and cleans unused torrents</p>
                 <form action="/search" method="get" class="hero-search">
                     <div class="search-wrapper">
                         <input type="text" name="q" placeholder="Search by title..." autocomplete="off" autofocus />
                     </div>
-                    <div style="margin-top: 16px; display: flex; gap: 8px; justify-content: center;">
+                    <div style="margin-top: 20px; display: flex; gap: 8px; justify-content: center;">
                          <button type="submit" class="btn btn-primary">{} Search</button>
                     </div>
                 </form>
@@ -528,7 +559,7 @@ async fn search_html(
                             <span class="mono">#{}</span>
                         </div>
                     </div>
-                    <div class="flex">
+                    <div class="flex gap-2">
                         {}
                         <a href="/t/{}" class="btn btn-icon">{}</a>
                     </div>
@@ -546,7 +577,7 @@ async fn search_html(
     }
 
     let results_html = if items.is_empty() {
-        r##"<div style="text-align:center; padding: 40px; color: var(--text-muted);">No results found.</div>"##
+        r##"<div style="text-align:center; padding: 40px; color: var(--text-muted);">No results found in the nest.</div>"##
             .to_string()
     } else {
         format!("<ul class=\"results-list\">{}</ul>", items)
@@ -556,7 +587,7 @@ async fn search_html(
         &q,
         format!(
             r##"
-            <div style="margin-top: 32px;">
+            <div style="margin-top: 40px;">
                 <form action="/search" method="get" class="search-wrapper">
                     <input type="text" name="q" value="{}" placeholder="Search..." autocomplete="off" />
                 </form>
@@ -606,7 +637,7 @@ async fn torrent_page(
         format!(
             r##"
             <div class="magnet-box">
-                <div class="flex" style="padding: 0 12px; color: var(--text-muted);">{}</div>
+                <div class="flex" style="padding: 0 12px; color: var(--snake-orange);">{}</div>
                 <input type="text" value="{}" readonly onclick="this.select()" />
                 <button class="btn btn-ghost" data-copy="{}">Copy</button>
                 <a href="{}" class="btn btn-primary">Open</a>
@@ -625,7 +656,7 @@ async fn torrent_page(
             r##"
             <main class="detail-card">
                 <div class="detail-header">
-                    <div style="color: var(--text-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">Torrent Detail</div>
+                    <div style="color: var(--snake-green); font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px;">Torrent Detail</div>
                     <h1 class="detail-title">{}</h1>
                     <div class="flex gap-4">
                         <span class="badge">Seeders: {}</span>
@@ -634,11 +665,11 @@ async fn torrent_page(
                 </div>
                 
                 <div style="margin-top: 24px;">
-                    <h3 style="font-size: 14px; font-weight: 500; margin-bottom: 8px;">Magnet Link</h3>
+                    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px; color: var(--text-main);">Magnet Link</h3>
                     {}
                 </div>
 
-                <div style="margin-top: 32px;">
+                <div style="margin-top: 40px;">
                     <a href="/search" class="btn btn-ghost" style="display:inline-flex;">&larr; Back to Search</a>
                 </div>
             </main>

@@ -49,4 +49,6 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ matrix.name }}
+          files: |
+            ${{ matrix.name }}
+            .env.example

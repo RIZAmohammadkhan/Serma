@@ -12,40 +12,30 @@ fn now_unix_ms() -> i64 {
         .as_millis() as i64
 }
 
-fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(default)
-}
-
 pub async fn run(state: AppState) {
     // Allow disabling cleanup.
-    if std::env::var("SERMA_CLEANUP")
-        .ok()
-        .is_some_and(|v| matches!(v.trim(), "0" | "false" | "off" | "no"))
-    {
+    if !state.config.cleanup_enabled {
         tracing::info!("cleanup: disabled via SERMA_CLEANUP");
         return;
     }
 
     // Cleanup is index-driven, so running more frequently is cheap.
     // Defaults are tuned to prevent unbounded growth without monopolizing CPU.
-    let every_secs = env_u64("SERMA_CLEANUP_EVERY_SECS", 10);
+    let every_secs = state.config.cleanup_every_secs;
     // Max number of index entries processed per tick.
-    let batch = env_u64("SERMA_CLEANUP_BATCH", 5_000) as usize;
+    let batch = state.config.cleanup_batch;
     // Wall-clock budget per tick.
-    let max_ms = env_u64("SERMA_CLEANUP_MAX_MS", 1_000);
+    let max_ms = state.config.cleanup_max_ms;
 
     // Records not seen for this long are considered inactive.
-    let ttl_secs = env_u64("SERMA_TORRENT_TTL_SECS", 24 * 60 * 60);
+    let ttl_secs = state.config.torrent_ttl_secs;
 
     // Give newly discovered hashes time to be enriched before pruning low-seed entries.
-    let low_seed_grace_secs = env_u64("SERMA_LOW_SEED_GRACE_SECS", 20 * 60);
+    let low_seed_grace_secs = state.config.low_seed_grace_secs;
 
     // Optional hard cap to prevent disk growth even if ingestion rate is extremely high.
     // If set (> 0), we evict oldest-by-last_seen until we're under the limit.
-    let max_records = env_u64("SERMA_MAX_TORRENTS", 0) as usize;
+    let max_records = state.config.max_torrents;
 
     let mut tick = interval(Duration::from_secs(every_secs.max(1)));
 

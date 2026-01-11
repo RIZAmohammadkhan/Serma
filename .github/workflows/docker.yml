@@ -15,6 +15,21 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --locked
+
   build:
     runs-on: ubuntu-latest
     permissions:

@@ -66,6 +66,14 @@ cargo build --release
 
 ### Development Configuration
 
+Serma can load configuration from a local `.env` file.
+
+```bash
+cp .env.example .env
+$EDITOR .env
+cargo run
+```
+
 ```bash
 # Custom data directory
 export SERMA_DATA_DIR=/tmp/serma-dev
@@ -136,11 +144,12 @@ User=serma
 Group=serma
 WorkingDirectory=/var/lib/serma
 
-# Environment variables
-Environment="SERMA_DATA_DIR=/var/lib/serma/data"
-Environment="SERMA_ADDR=127.0.0.1:3000"
-Environment="SERMA_SPIDER_BIND=0.0.0.0:6881"
-Environment="RUST_LOG=info"
+# Environment file (recommended)
+# Create this from the repo's .env.example:
+#   sudo mkdir -p /etc/serma
+#   sudo cp .env.example /etc/serma/serma.env
+#   sudo $EDITOR /etc/serma/serma.env
+EnvironmentFile=/etc/serma/serma.env
 
 # Security hardening
 PrivateTmp=yes
@@ -199,6 +208,27 @@ sudo ufw allow 6881/udp
 ---
 
 ### Docker Deployment
+#### Using an env file
+
+Serma supports Docker's `--env-file` directly:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+
+# For Docker, make sure you set at least:
+#   SERMA_DATA_DIR=/data
+#   SERMA_ADDR=0.0.0.0:3000
+
+docker run --rm \
+  --name serma \
+  --env-file .env \
+  -v "$PWD/data:/data" \
+  -p 3000:3000 \
+  -p 6881:6881/udp \
+  ghcr.io/<your-org-or-user>/serma:latest
+```
+
 
 #### 1. Create Dockerfile
 
