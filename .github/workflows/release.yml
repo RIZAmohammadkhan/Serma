@@ -26,7 +26,7 @@ jobs:
             name: serma-macos-arm64
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       # Install the Rust toolchain and the specific target architecture
       - uses: dtolnay/rust-toolchain@stable
@@ -51,4 +51,3 @@ jobs:
         with:
           files: |
             ${{ matrix.name }}
-            .env.example

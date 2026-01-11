@@ -35,17 +35,18 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -ms /bin/bash serma
 
 # Create data directory and set permissions
-RUN mkdir -p /data && chown serma:serma /data
+RUN mkdir -p /data /usr/local/share/serma && chown -R serma:serma /data /usr/local/share/serma
 
-# Switch to user
-USER serma
 WORKDIR /app
 
 # Copy the binary from the builder stage
 COPY --from=builder /usr/src/app/target/release/serma /usr/local/bin/serma
 
 # Ship the env template for convenience (optional)
-COPY .env.example /usr/local/share/serma/.env.example
+COPY --chown=serma:serma .env.example /usr/local/share/serma/.env.example
+
+# Switch to user
+USER serma
 
 # Set environment variables
 ENV RUST_LOG=info
